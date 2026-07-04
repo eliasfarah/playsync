@@ -129,24 +129,41 @@ pasta. Sao orfaos agora — o usuario pode apagar manualmente quando quiser.
 `uuid` removido do workspace (nao usado mais depois que `zip_path` parou de
 gerar nome aleatorio).
 
+## GitHub: RESOLVIDO (2026-07-04)
+
+Repo real: `git@github.com:eliasfarah/playsync.git`, branch `main` empurrada
+(3 commits: inicial, pastas PlaySync+Box, fix do PKGBUILD). PKGBUILD
+atualizado pra apontar pro repo real (antes tinha o placeholder `yourname`).
+
+**Autenticacao SSH:** o usuario primeiro tentou colar uma chave RSA existente
+do Mac (`~/.ssh/macos`) — corrompida/incompativel, `ssh-keygen -y` falhava
+localmente com `error in libcrypto: unsupported` (nem chegava a tentar
+rede, entao nao era problema de agent/config). Gerada uma chave ed25519 nova
+neste Linux (`~/.ssh/playsync_github`), cadastrada pelo usuario em
+github.com/settings/keys, `~/.ssh/config` aponta `Host github.com` pra ela.
+
+**Email privado do GitHub:** primeiro push falhou (`GH007`) porque os
+commits usavam `eliasfa@gmail.com` (email real, protegido). Como nada tinha
+sido empurrado ainda, reescrevemos os commits locais (`git filter-branch
+--env-filter`, nao rebase -i) pro noreply do GitHub:
+`234085+eliasfarah@users.noreply.github.com` (id via
+`api.github.com/users/eliasfarah`, publico). `git config user.email` deste
+repo ja fica configurado assim daqui pra frente.
+
 ## Proxima tarefa em aberto
 
-Empacotar (.deb/AUR) — ha um diretorio `packaging/` com stubs de `aur` e
-`systemd`, ainda nao explorado a fundo nesta sessao. O usuario passou o repo
-real: `https://github.com/eliasfarah/playsync.git` (o PKGBUILD ainda aponta
-pro placeholder `yourname` — precisa atualizar antes de tentar buildar o
-pacote).
+Empacotar (.deb/AUR): `packaging/aur/PKGBUILD` ja aponta pro repo real, mas
+`source=` espera uma tag `v0.1.0` publicada (`refs/tags/v0.1.0` +
+release/tarball no GitHub) que ainda nao existe — precisa decidir se cria a
+tag/release agora ou deixa pra quando o codigo estiver mais maduro.
 
 ## Maquina de dev (hostname "gaming", Arch Linux)
 
 - Binarios instalados em `~/.local/bin/{playsync,playsyncd}` (build release,
-  atualizados nesta sessao com o fix do zip)
+  atualizados nesta sessao com zip + pastas PlaySync + Box)
 - Unit em `~/.config/systemd/user/playsyncd.service`, enabled + active
-- Repo commitado (2026-07-04, commit `68bc211`, autor "Elias Farah" configurado
-  localmente so neste repo, `git config user.*` sem `--global`). Sem remote
-  ainda — nao existe `github.com/yourname/playsync` de verdade, entao o
-  PKGBUILD em `packaging/aur/` nao pode ser testado ate ter um repo real com
-  release/tag.
+- Repo commitado e com push pro GitHub (ver secao acima). `git config
+  user.*` configurado so neste repo (nao `--global`).
 
 ## Como validar antes de dizer "pronto"
 
