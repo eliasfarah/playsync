@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use playsync_core::archive;
 use playsync_core::cloud::{self, CloudBackend};
 use playsync_core::config::Config;
@@ -21,6 +21,9 @@ pub struct SyncEngine {
     config: Mutex<Config>,
     history: Arc<HistoryDb>,
     status: Mutex<HashMap<u32, SyncStatus>>,
+    /// Horario (UTC) em que cada AppID rodando foi visto abrir, pra calcular
+    /// a duracao real da sessao quando ele fechar (ver `take_session_duration_secs`).
+    session_started: Mutex<HashMap<u32, DateTime<Utc>>>,
 }
 
 impl SyncEngine {
@@ -29,6 +32,7 @@ impl SyncEngine {
             config: Mutex::new(config),
             history,
             status: Mutex::new(HashMap::new()),
+            session_started: Mutex::new(HashMap::new()),
         }
     }
 
@@ -36,21 +40,40 @@ impl SyncEngine {
         self.status.lock().await.insert(app_id, SyncStatus::Running);
     }
 
+    /// Chamado quando o watcher detecta o jogo abrindo — guarda o horario
+    /// pra calcular a duracao da sessao quando ele fechar.
+    pub async fn mark_session_started(&self, app_id: u32) {
+        self.session_started.lock().await.insert(app_id, Utc::now());
+    }
+
+    /// Chamado quando o watcher detecta o jogo fechando — `None` se por
+    /// algum motivo nao vimos o inicio dessa sessao (ex: daemon reiniciado
+    /// com o jogo ja aberto). Remove a entrada: cada sessao so conta uma vez.
+    pub async fn take_session_duration_secs(&self, app_id: u32) -> Option<i64> {
+        let start = self.session_started.lock().await.remove(&app_id)?;
+        Some((Utc::now() - start).num_seconds())
+    }
+
     /// Agenda o backup de um jogo apos ele fechar, esperando o debounce
     /// configurado (evita disparar em falsos positivos, ex: crash + relaunch rapido).
+    /// `session_duration_secs` (calculado no momento do fechamento, nao apos
+    /// o debounce) fica gravado no historico junto com o backup — ver `sync_one`.
     ///
     /// Recebe `Arc<Self>` explicitamente (em vez de `self: Arc<Self>`) para deixar
     /// claro no call-site que estamos clonando o Arc do engine, nao uma referencia.
-    pub async fn schedule_sync(engine: Arc<Self>, app_id: u32) {
+    pub async fn schedule_sync(engine: Arc<Self>, app_id: u32, session_duration_secs: Option<i64>) {
         let debounce = engine.config.lock().await.sync_debounce_secs;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(debounce)).await;
-            engine.sync_now(Some(app_id)).await;
+            engine.sync_now(Some(app_id), session_duration_secs).await;
         });
     }
 
-    /// Sincroniza um jogo especifico (`Some(app_id)`) ou todos os elegiveis (`None`).
-    pub async fn sync_now(&self, app_id: Option<u32>) {
+    /// Sincroniza um jogo especifico (`Some(app_id)`) ou todos os elegiveis
+    /// (`None`). `session_duration_secs` so faz sentido pro caso de um unico
+    /// jogo, disparado pelo fechamento dele — `None` pra sync manual
+    /// (`playsync sync`/TUI) ou "sincronizar tudo".
+    pub async fn sync_now(&self, app_id: Option<u32>, session_duration_secs: Option<i64>) {
         let games = match steam::discover_games() {
             Ok(games) => games,
             Err(err) => {
@@ -81,7 +104,8 @@ impl SyncEngine {
         let backend = provider.as_deref().and_then(parse_provider).map(cloud::backend_for);
 
         for game in targets {
-            self.sync_one(&game, backend.as_deref(), &local_root, versions_to_keep).await;
+            self.sync_one(&game, backend.as_deref(), &local_root, versions_to_keep, session_duration_secs)
+                .await;
         }
     }
 
@@ -95,6 +119,7 @@ impl SyncEngine {
         backend: Option<&dyn CloudBackend>,
         local_root: &Path,
         versions_to_keep: usize,
+        session_duration_secs: Option<i64>,
     ) {
         if game.save_paths.is_empty() {
             tracing::debug!(app_id = game.app_id, "nenhuma pasta de save conhecida, ignorando");
@@ -172,13 +197,24 @@ impl SyncEngine {
         if let Err(err) = self.history.record(&BackupEntry {
             app_id: game.app_id,
             name: game.name.clone(),
-            timestamp: Utc::now(),
+            // O MESMO `now` usado pra nomear os arquivos de versao (nao um
+            // `Utc::now()` novo): o zip+upload pode levar alguns segundos,
+            // entao um timestamp separado aqui derivaria do nome do arquivo
+            // o suficiente pra quebrar a correlacao em
+            // `actions::list_versions_with_info` (tolerancia de 5s).
+            timestamp: now,
             destination,
             success,
             // Guarda onde o save estava agora, pro `restore` conseguir achar
             // o alvo mesmo se ele sumir de verdade do disco depois (a
             // deteccao ao vivo nao acha mais nada nesse caso).
             source_paths: game.save_paths.clone(),
+            // Duracao real da sessao (abrir->fechar) que disparou esse sync,
+            // se foi por fechamento de jogo — ajuda a identificar depois se
+            // uma versao veio de progresso de verdade ou de um teste rapido
+            // (ver `Config::short_session_warning_secs`). `None` pra sync
+            // manual, sem sessao associada.
+            session_duration_secs,
         }) {
             tracing::error!(%err, "falha ao gravar historico de backup");
         }

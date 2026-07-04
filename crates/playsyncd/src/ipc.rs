@@ -71,7 +71,8 @@ async fn handle_request(engine: &Arc<SyncEngine>, request: Request) -> Response 
             // `Status` (cada jogo marca `Running` antes de zipar/subir).
             let engine = engine.clone();
             tokio::spawn(async move {
-                engine.sync_now(app_id).await;
+                // Disparo manual (CLI/TUI) — sem sessao de jogo associada.
+                engine.sync_now(app_id, None).await;
             });
             Response::Ack
         }

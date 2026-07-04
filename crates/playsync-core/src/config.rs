@@ -34,6 +34,11 @@ pub struct Config {
     /// isso) nao destruir a unica copia boa que existia — com >1 versao,
     /// `restore` ainda alcanca o que veio antes.
     pub backup_versions_to_keep: usize,
+    /// Sessoes de jogo (abrir ate fechar) mais curtas que isso sao marcadas
+    /// como suspeitas ao listar versoes de backup (`restore --list-versions`)
+    /// — sinal tipico de "abri o jogo sem save, so testei, fechei" em vez de
+    /// progresso de verdade.
+    pub short_session_warning_secs: i64,
 }
 
 impl Default for Config {
@@ -45,6 +50,7 @@ impl Default for Config {
             local_backup_dir: None,
             extra_save_paths: HashMap::new(),
             backup_versions_to_keep: 5,
+            short_session_warning_secs: 120,
         }
     }
 }

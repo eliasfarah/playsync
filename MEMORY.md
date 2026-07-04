@@ -1,5 +1,66 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Duracao de sessao por versao + escolha de versao na TUI: RESOLVIDO (2026-07-04)
+
+Usuario perguntou duas coisas depois do versionamento: (1) a TUI deixa
+escolher qual versao restaurar? (nao, so a mais recente); (2) da pra guardar
+"tempo jogado" pra identificar o save? Esclarecido em ida e volta: tempo
+TOTAL da Steam nao serve (cumulativo, nunca zera mesmo com o save apagado),
+e sim a **duracao real da sessao** (abrir->fechar, que o daemon ja detecta
+pro gatilho de sync) — porque no incidente anterior (secao acima), as 2
+sessoes que sobrescreveram o backup bom duraram 51s e 30s, bem curtas.
+Usuario confirmou: guardar a duracao, mostrar no restore, e marcar sessoes
+curtas (< `short_session_warning_secs`, 120s por padrao) como suspeitas.
+Sync manual (`playsync sync`/TUI) mostra "(manual)", sem duracao.
+
+**`SyncEngine` (playsyncd) ganha rastreio de sessao:** `mark_session_started`
+(chamado em `GameEvent::Started`) guarda `Utc::now()` por AppID;
+`take_session_duration_secs` (chamado em `GameEvent::Stopped`, ANTES do
+debounce) calcula a duracao e remove a entrada. `schedule_sync`/`sync_now`/
+`sync_one` ganham `session_duration_secs: Option<i64>` (via IPC/manual e
+sempre `None`). `BackupEntry` (ipc.rs) e a tabela `backups` (db.rs, migracao
+idempotente) ganham a coluna. `HistoryDb::entries_for_app` novo, pra
+`restore --list-versions` correlacionar cada arquivo de versao com a sessao
+que o gerou.
+
+**`versions::parse_version_timestamp`** (inverso de `version_file_name`)
+extrai o timestamp do nome do arquivo; `actions::list_versions_with_info`
+casa isso com a entrada de historico mais proxima (`SessionInfo::Session
+{duration_secs}` / `Manual` / `Unknown`), `format_version_label` monta o
+rotulo (`(sessao de 42min)`, `(manual)`, `(⚠ sessao curta — 9s)`).
+
+**Bug achado e corrigido durante a validacao ao vivo:** simulei uma sessao
+longa (~125s, acima do limite) e ela apareceu SEM anotacao nenhuma no
+`--list-versions` (nem duracao, nem "manual" — like "desconhecida").
+Causa: `sync_one` chamava `Utc::now()` DUAS vezes — uma pro nome do arquivo
+(inicio do sync) e outra pro `BackupEntry.timestamp` (depois do
+zip+upload, que pode levar alguns segundos de rede) — os dois timestamps
+divergiam mais que a tolerancia de correlacao (5s), entao a correlacao
+falhava silenciosamente. Corrigido reusando a mesma variavel `now` nos dois
+lugares (tambem mais correto semanticamente: "quando esse backup foi feito"
+deveria ser o inicio do sync, nao sei la quando o upload por acaso terminou).
+
+**TUI ganha tela de escolha de versao:** novo `Mode::VersionChoice` entre
+`PathChoice`/`Confirm` — so aparece quando ha mais de uma versao disponivel
+pra esse save_path+origem (senao segue direto, como antes). Cursor comeca
+na mais recente. Fluxo refatorado em `after_path_chosen`/`confirm_or_run`
+(compartilhados entre o caso de 1 pasta so e o caso de escolher no
+`PathChoice`), `version_source_for` decide Local vs. o provedor de nuvem
+ativo conforme a acao.
+
+**Validado ao vivo, de ponta a ponta** (rebuild release, reinstalado, daemon
+reiniciado): simulei sessoes de jogo reais via processo fake com
+`SteamAppId=335300` no ambiente (mesma tecnica que o watcher usa pra
+detectar jogos de verdade) — uma curta (9s, real: `env SteamAppId=335300
+sleep 8 &`) confirmada com "⚠ sessao curta — 9s" local E na nuvem; uma
+longa (123s) confirmada como "(sessao de 2min)" sem aviso, so depois do fix
+da correlacao acima. TUI testada via automacao de pty (mesmo metodo de
+sessoes anteriores): naveguei ate DARK SOULS II, abri o menu, escolhi
+"Baixar da nuvem", a tela `VersionChoice` apareceu com as 5 versoes
+anotadas certas, cursor na mais recente, navegacao ↑ funcionando.
+
+**Ainda nao commitado.**
+
 ## Release v0.3.0 publicado
 
 Empurrados os 3 commits desta sessao (manifest da Ludusavi, fix do restore,

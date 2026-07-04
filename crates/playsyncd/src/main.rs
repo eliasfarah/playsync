@@ -56,10 +56,12 @@ async fn main() -> Result<()> {
                     Some(GameEvent::Started(app_id)) => {
                         tracing::info!(app_id, "jogo iniciado");
                         engine.mark_running(app_id).await;
+                        engine.mark_session_started(app_id).await;
                     }
                     Some(GameEvent::Stopped(app_id)) => {
-                        tracing::info!(app_id, "jogo fechado, sincronizacao agendada");
-                        SyncEngine::schedule_sync(engine.clone(), app_id).await;
+                        let session_duration_secs = engine.take_session_duration_secs(app_id).await;
+                        tracing::info!(app_id, ?session_duration_secs, "jogo fechado, sincronizacao agendada");
+                        SyncEngine::schedule_sync(engine.clone(), app_id, session_duration_secs).await;
                     }
                     None => {
                         tracing::error!("watcher de processos encerrou inesperadamente");

@@ -262,20 +262,23 @@ async fn restore(
         .clone();
 
     let sanitized = playsync_core::naming::sanitize(&game.name);
-    let versions = actions::list_versions(&source, &sanitized, idx, paths.len()).await?;
 
     if list_versions {
-        if versions.is_empty() {
+        let short_session_warning_secs =
+            playsync_core::config::Config::load_or_default()?.short_session_warning_secs;
+        let infos = actions::list_versions_with_info(app_id, &source, &sanitized, idx, paths.len()).await?;
+        if infos.is_empty() {
             println!("nenhuma versao de backup encontrada pra \"{}\" nessa origem", game.name);
         } else {
             println!("versoes disponiveis pra \"{}\" (mais recente por ultimo):", game.name);
-            for name in &versions {
-                println!("  {name}");
+            for info in &infos {
+                println!("  {}", actions::format_version_label(info, short_session_warning_secs));
             }
         }
         return Ok(());
     }
 
+    let versions = actions::list_versions(&source, &sanitized, idx, paths.len()).await?;
     let file_name = actions::pick_version(&versions, version)?.to_string();
     let (source_label, bytes) = actions::fetch_backup_bytes(&source, &sanitized, &file_name).await?;
 

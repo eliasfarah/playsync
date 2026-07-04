@@ -219,16 +219,25 @@ its place) — you'll be asked to confirm unless `--yes` is passed.
 > corrupted), `restore` falls back to the path recorded in backup history
 > instead of refusing to run.
 
+`--list-versions` also shows how each backup came to be: `(sessão de 42min)`
+for one triggered by closing the game after playing for that long, `(manual)`
+for one from `playsync sync`/the TUI, or `⚠ sessao curta` for a session
+shorter than `short_session_warning_secs` (2 minutes by default) — a strong
+sign it was a quick test on a fresh/empty save rather than real progress,
+not something to restore from. The TUI's restore/download actions show the
+same picker whenever more than one version exists for a save path.
+
 #### Optional configuration
 
 `~/.config/playsync/config.toml`:
 
 ```toml
-cloud_provider = "google-drive"    # or "box" — set by `cloud connect`
-ignored_app_ids = [12345]          # AppIDs to never sync
-sync_debounce_secs = 5             # wait after the game closes before syncing
-local_backup_dir = "/custom/path"  # default: ~/PlaySync
-backup_versions_to_keep = 5        # how many timestamped backups to keep per save path
+cloud_provider = "google-drive"      # or "box" — set by `cloud connect`
+ignored_app_ids = [12345]            # AppIDs to never sync
+sync_debounce_secs = 5               # wait after the game closes before syncing
+local_backup_dir = "/custom/path"    # default: ~/PlaySync
+backup_versions_to_keep = 5          # how many timestamped backups to keep per save path
+short_session_warning_secs = 120     # sessions shorter than this are flagged in --list-versions
 ```
 
 ### Uninstalling
@@ -471,6 +480,14 @@ lugar) — voce vai ser perguntado antes, a menos que passe `--yes`.
 > sozinhas. Se a pasta de save ao vivo sumiu de vez (apagada, corrompida),
 > `restore` cai pro caminho gravado no historico em vez de simplesmente recusar.
 
+`--list-versions` tambem mostra como cada backup surgiu: `(sessao de 42min)`
+pra um disparado ao fechar o jogo depois desse tempo jogando, `(manual)` pra
+um vindo de `playsync sync`/da TUI, ou `⚠ sessao curta` pra sessao mais curta
+que `short_session_warning_secs` (2 minutos por padrao) — forte sinal de
+teste rapido num save novo/vazio, nao progresso de verdade, melhor conferir
+antes de restaurar. As acoes de restaurar/baixar da TUI mostram o mesmo
+seletor sempre que houver mais de uma versao pra uma pasta de save.
+
 #### Configuração opcional
 
 `~/.config/playsync/config.toml`:
@@ -481,6 +498,7 @@ ignored_app_ids = [12345]              # AppIDs pra nunca sincronizar
 sync_debounce_secs = 5                 # espera apos fechar o jogo antes de sincronizar
 local_backup_dir = "/caminho/custom"   # padrao: ~/PlaySync
 backup_versions_to_keep = 5            # quantos backups com timestamp manter por pasta de save
+short_session_warning_secs = 120       # sessoes mais curtas que isso sao marcadas no --list-versions
 ```
 
 ### Desinstalação

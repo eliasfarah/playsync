@@ -66,10 +66,18 @@ enum Mode {
         paths: Vec<PathBuf>,
         cursor: usize,
     },
+    VersionChoice {
+        app_id: u32,
+        action: GameAction,
+        path_index: usize,
+        versions: Vec<actions::VersionInfo>,
+        cursor: usize,
+    },
     Confirm {
         app_id: u32,
         action: GameAction,
         path_index: usize,
+        file_name: String,
     },
     Info(String),
 }
@@ -164,19 +172,29 @@ pub async fn run() -> Result<()> {
                     let cursor = (cursor + 1).min(paths.len().saturating_sub(1));
                     Mode::PathChoice { app_id, action, cursor, paths }
                 }
-                KeyCode::Enter => {
-                    if is_destructive(action) {
-                        Mode::Confirm { app_id, action, path_index: cursor }
-                    } else {
-                        Mode::Info(run_action(app_id, action, cursor, &game_saves).await)
-                    }
-                }
+                KeyCode::Enter => after_path_chosen(app_id, action, cursor, &game_saves).await,
                 _ => Mode::PathChoice { app_id, action, cursor, paths },
             },
 
-            Mode::Confirm { app_id, action, path_index } => match key.code {
+            Mode::VersionChoice { app_id, action, path_index, versions, cursor } => match key.code {
+                KeyCode::Esc => Mode::Table,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    Mode::VersionChoice { app_id, action, path_index, cursor: cursor.saturating_sub(1), versions }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let cursor = (cursor + 1).min(versions.len().saturating_sub(1));
+                    Mode::VersionChoice { app_id, action, path_index, cursor, versions }
+                }
+                KeyCode::Enter => {
+                    let file_name = versions[cursor].file_name.clone();
+                    confirm_or_run(app_id, action, path_index, file_name, &game_saves).await
+                }
+                _ => Mode::VersionChoice { app_id, action, path_index, cursor, versions },
+            },
+
+            Mode::Confirm { app_id, action, path_index, file_name } => match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    Mode::Info(run_action(app_id, action, path_index, &game_saves).await)
+                    Mode::Info(run_action(app_id, action, path_index, &file_name, &game_saves).await)
                 }
                 _ => Mode::Table,
             },
@@ -219,7 +237,7 @@ fn active_cloud_provider() -> Result<CloudProvider> {
 
 /// Decide o proximo passo depois que uma acao foi escolhida no menu: dispara
 /// na hora (`SyncNow`), pede pra escolher a pasta de save (se houver mais de
-/// uma), ou pede confirmacao antes de rodar (acoes destrutivas).
+/// uma), ou segue pra escolha de versao (`after_path_chosen`).
 async fn choose_action(app_id: u32, action: GameAction, game_saves: &[GameSave]) -> Mode {
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return Mode::Info(format!("jogo (AppID {app_id}) nao encontrado"));
@@ -239,19 +257,81 @@ async fn choose_action(app_id: u32, action: GameAction, game_saves: &[GameSave])
     }
 
     if paths.len() == 1 {
-        if is_destructive(action) {
-            Mode::Confirm { app_id, action, path_index: 0 }
-        } else {
-            Mode::Info(run_action(app_id, action, 0, game_saves).await)
-        }
+        after_path_chosen(app_id, action, 0, game_saves).await
     } else {
         Mode::PathChoice { app_id, action, paths, cursor: 0 }
     }
 }
 
+/// De onde a acao le/escreve o backup — `PullFromCloud`/`RestoreFromCloud`
+/// usam o provedor de nuvem ativo, `RestoreLocal` e sempre local.
+fn version_source_for(action: GameAction) -> Result<RestoreSource> {
+    match action {
+        GameAction::SyncNow => unreachable!("SyncNow nao usa origem de restore"),
+        GameAction::PullFromCloud | GameAction::RestoreFromCloud => {
+            Ok(RestoreSource::Cloud(active_cloud_provider()?))
+        }
+        GameAction::RestoreLocal => Ok(RestoreSource::Local),
+    }
+}
+
+/// Depois que o path_index esta resolvido (so tinha um, ou o usuario
+/// escolheu no `PathChoice`): lista as versoes disponiveis pra esse
+/// path_index+origem e, se houver mais de uma, deixa o usuario escolher
+/// (`VersionChoice`) — senao segue direto pra confirmar/rodar com a unica
+/// que existe.
+async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, game_saves: &[GameSave]) -> Mode {
+    let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
+        return Mode::Info(format!("jogo (AppID {app_id}) nao encontrado"));
+    };
+    let (paths, _) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let sanitized = playsync_core::naming::sanitize(&game.name);
+    let paths_len = paths.len();
+
+    let source = match version_source_for(action) {
+        Ok(source) => source,
+        Err(err) => return Mode::Info(format!("Erro: {err}")),
+    };
+
+    let versions = match actions::list_versions_with_info(app_id, &source, &sanitized, path_index, paths_len).await {
+        Ok(versions) => versions,
+        Err(err) => return Mode::Info(format!("Erro: {err}")),
+    };
+
+    if versions.is_empty() {
+        return Mode::Info(format!("nenhum backup encontrado pra \"{}\" nessa origem", game.name));
+    }
+
+    if versions.len() == 1 {
+        let file_name = versions[0].file_name.clone();
+        confirm_or_run(app_id, action, path_index, file_name, game_saves).await
+    } else {
+        let cursor = versions.len() - 1; // comeca na mais recente
+        Mode::VersionChoice { app_id, action, path_index, versions, cursor }
+    }
+}
+
+/// Ultimo passo antes de executar: acoes destrutivas pedem confirmacao,
+/// as outras (baixar da nuvem, so guarda local) rodam direto.
+async fn confirm_or_run(
+    app_id: u32,
+    action: GameAction,
+    path_index: usize,
+    file_name: String,
+    game_saves: &[GameSave],
+) -> Mode {
+    if is_destructive(action) {
+        Mode::Confirm { app_id, action, path_index, file_name }
+    } else {
+        Mode::Info(run_action(app_id, action, path_index, &file_name, game_saves).await)
+    }
+}
+
 /// Executa de fato a acao (bloqueia a tela ate terminar — pra um unico jogo/
-/// pasta isso e rapido, ao contrario do "sincronizar tudo").
-async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_saves: &[GameSave]) -> String {
+/// pasta isso e rapido, ao contrario do "sincronizar tudo"). `file_name` ja
+/// vem resolvido (a unica versao existente, ou a que o usuario escolheu em
+/// `VersionChoice`).
+async fn run_action(app_id: u32, action: GameAction, path_index: usize, file_name: &str, game_saves: &[GameSave]) -> String {
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return format!("jogo (AppID {app_id}) nao encontrado");
     };
@@ -261,7 +341,6 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
     };
     let target = target.clone();
     let sanitized = playsync_core::naming::sanitize(&game.name);
-    let paths_len = paths.len();
     let warning = if used_history {
         "aviso: pasta de save atual nao encontrada no disco, usando o caminho do ultimo backup — "
     } else {
@@ -274,12 +353,11 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
             GameAction::PullFromCloud => {
                 let provider = active_cloud_provider()?;
                 let source = RestoreSource::Cloud(provider);
-                let (_, file_name, bytes) =
-                    actions::fetch_latest_backup_bytes(&source, &sanitized, path_index, paths_len).await?;
+                let (_, bytes) = actions::fetch_backup_bytes(&source, &sanitized, file_name).await?;
                 let local_dest = playsync_core::config::Config::load_or_default()?
                     .local_backup_root()?
                     .join(&sanitized)
-                    .join(&file_name);
+                    .join(file_name);
                 if let Some(parent) = local_dest.parent() {
                     tokio::fs::create_dir_all(parent).await?;
                 }
@@ -287,23 +365,17 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
                 Ok(format!("Baixado da nuvem para {}", local_dest.display()))
             }
             GameAction::RestoreLocal => {
-                let (_, _, bytes) =
-                    actions::fetch_latest_backup_bytes(&RestoreSource::Local, &sanitized, path_index, paths_len)
-                        .await?;
+                let (_, bytes) =
+                    actions::fetch_backup_bytes(&RestoreSource::Local, &sanitized, file_name).await?;
                 actions::extract_over(&bytes, &target)?;
-                Ok(format!("Restaurado (backup local) em {}", target.display()))
+                Ok(format!("Restaurado (backup local, {file_name}) em {}", target.display()))
             }
             GameAction::RestoreFromCloud => {
                 let provider = active_cloud_provider()?;
-                let (_, _, bytes) = actions::fetch_latest_backup_bytes(
-                    &RestoreSource::Cloud(provider),
-                    &sanitized,
-                    path_index,
-                    paths_len,
-                )
-                .await?;
+                let (_, bytes) =
+                    actions::fetch_backup_bytes(&RestoreSource::Cloud(provider), &sanitized, file_name).await?;
                 actions::extract_over(&bytes, &target)?;
-                Ok(format!("Restaurado (nuvem) em {}", target.display()))
+                Ok(format!("Restaurado (nuvem, {file_name}) em {}", target.display()))
             }
         }
     }
@@ -344,14 +416,31 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 *cursor,
             );
         }
-        Mode::Confirm { app_id, action, .. } => {
+        Mode::VersionChoice { app_id, versions, cursor, .. } => {
+            let title = game_title(games, *app_id);
+            let short_session_warning_secs = playsync_core::config::Config::load_or_default()
+                .map(|c| c.short_session_warning_secs)
+                .unwrap_or(120);
+            let items: Vec<ListItem> = versions
+                .iter()
+                .map(|v| ListItem::new(actions::format_version_label(v, short_session_warning_secs)))
+                .collect();
+            draw_menu_popup(
+                frame,
+                &format!(" {title} — qual versao restaurar? (mais recente marcada abaixo)  ([Esc] cancelar) "),
+                items,
+                *cursor,
+            );
+        }
+        Mode::Confirm { app_id, action, file_name, .. } => {
             let title = game_title(games, *app_id);
             let label = ACTIONS.iter().find(|(a, _)| *a == *action).map(|(_, l)| *l).unwrap_or("?");
             draw_message_popup(
                 frame,
                 " Confirmar ",
                 &format!(
-                    "{title}\n\n{label}\n\nIsso vai APAGAR o save atual do jogo.\n\n\
+                    "{title}\n\n{label}\n\nVersao: {file_name}\n\n\
+                     Isso vai APAGAR o save atual do jogo.\n\n\
                      [y] confirmar   [qualquer outra tecla] cancelar"
                 ),
             );

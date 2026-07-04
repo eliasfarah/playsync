@@ -85,6 +85,94 @@ pub async fn list_versions(
     Ok(playsync_core::versions::sort_versions(names, &prefix))
 }
 
+/// De onde veio uma versao de backup, pra ajudar a escolher qual restaurar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionInfo {
+    /// Sem entrada de historico correlacionada (arquivo de antes dessa
+    /// feature, ou historico limpo/rotacionado).
+    Unknown,
+    /// Sync manual (`playsync sync` ou "sincronizar tudo" na TUI) — sem
+    /// sessao de jogo associada.
+    Manual,
+    /// Sync automatico, disparado pelo fechamento do jogo, com a duracao
+    /// real da sessao (abrir ate fechar).
+    Session { duration_secs: i64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct VersionInfo {
+    pub file_name: String,
+    pub session: SessionInfo,
+}
+
+/// Mesma lista de `list_versions`, mas com a sessao que gerou cada versao
+/// correlacionada (duracao real, manual, ou desconhecida) — usado por
+/// `restore --list-versions` e pelo seletor de versao da TUI, pra ajudar a
+/// identificar qual e progresso de verdade em vez de um teste rapido.
+pub async fn list_versions_with_info(
+    app_id: u32,
+    source: &RestoreSource,
+    sanitized: &str,
+    path_index: usize,
+    paths_len: usize,
+) -> Result<Vec<VersionInfo>> {
+    let names = list_versions(source, sanitized, path_index, paths_len).await?;
+    let prefix = playsync_core::versions::file_prefix(path_index, paths_len);
+
+    // So pra exibicao — se o historico nao abrir por algum motivo, mostra as
+    // versoes sem a info de sessao em vez de falhar o comando inteiro.
+    let history_entries = playsync_core::db::HistoryDb::open_default()
+        .ok()
+        .and_then(|h| h.entries_for_app(app_id, 500).ok())
+        .unwrap_or_default();
+
+    Ok(names
+        .into_iter()
+        .map(|file_name| {
+            // Os dois `Utc::now()` (nome do arquivo, `BackupEntry.timestamp`)
+            // vem do mesmo `sync_one`, a poucos milissegundos um do outro —
+            // 5s de tolerancia cobre isso com folga sem risco de casar com o
+            // sync errado de um jogo que sincroniza com frequencia.
+            let session = playsync_core::versions::parse_version_timestamp(&file_name, &prefix)
+                .and_then(|ts| {
+                    history_entries
+                        .iter()
+                        .min_by_key(|e| (e.timestamp - ts).num_seconds().abs())
+                        .filter(|e| (e.timestamp - ts).num_seconds().abs() <= 5)
+                })
+                .map(|entry| match entry.session_duration_secs {
+                    Some(duration_secs) => SessionInfo::Session { duration_secs },
+                    None => SessionInfo::Manual,
+                })
+                .unwrap_or(SessionInfo::Unknown);
+            VersionInfo { file_name, session }
+        })
+        .collect())
+}
+
+/// Rotulo pronto pra exibir ao lado do nome do arquivo, com aviso se a
+/// sessao foi mais curta que `short_session_warning_secs` (config) — sinal
+/// tipico de "abri o jogo sem save, so testei, fechei", nao progresso real.
+pub fn format_version_label(info: &VersionInfo, short_session_warning_secs: i64) -> String {
+    match info.session {
+        SessionInfo::Unknown => info.file_name.clone(),
+        SessionInfo::Manual => format!("{} (manual)", info.file_name),
+        SessionInfo::Session { duration_secs } => {
+            let duration_secs = duration_secs.max(0);
+            let label = if duration_secs >= 60 {
+                format!("{}min", duration_secs / 60)
+            } else {
+                format!("{duration_secs}s")
+            };
+            if duration_secs < short_session_warning_secs {
+                format!("{} (\u{26a0} sessao curta — {label})", info.file_name)
+            } else {
+                format!("{} (sessao de {label})", info.file_name)
+            }
+        }
+    }
+}
+
 /// Escolhe qual versao usar: `explicit` (nome exato, de `--version` ou do
 /// menu da TUI) se informado, senao a mais recente. `versions` deve vir
 /// ordenada da mais antiga pra mais nova (`list_versions`).
@@ -100,23 +188,6 @@ pub fn pick_version<'a>(versions: &'a [String], explicit: Option<&str>) -> Resul
             .map(String::as_str)
             .context("nenhum backup encontrado pra esse jogo/pasta/origem"),
     }
-}
-
-/// Atalho pra "quero a versao mais recente, sem oferecer escolha" (usado
-/// pelo menu da TUI, que nao tem UI pra listar/escolher versao ainda —
-/// `playsync restore --list-versions`/`--version` na CLI cobre esse caso).
-/// Devolve o rotulo da origem, o nome do arquivo escolhido (pra quem precisa
-/// exibir/persistir) e os bytes baixados.
-pub async fn fetch_latest_backup_bytes(
-    source: &RestoreSource,
-    sanitized: &str,
-    path_index: usize,
-    paths_len: usize,
-) -> Result<(String, String, Vec<u8>)> {
-    let versions = list_versions(source, sanitized, path_index, paths_len).await?;
-    let file_name = pick_version(&versions, None)?.to_string();
-    let (label, bytes) = fetch_backup_bytes(source, sanitized, &file_name).await?;
-    Ok((label, file_name, bytes))
 }
 
 /// Le os bytes do backup de `PlaySync/<sanitized>/<file_name>`, local ou de

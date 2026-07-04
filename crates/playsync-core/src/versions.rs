@@ -55,6 +55,22 @@ pub fn names_to_prune(sorted_oldest_first: &[String], keep: usize) -> &[String] 
     &sorted_oldest_first[..excess]
 }
 
+/// Inverso de `version_file_name`: extrai o timestamp embutido no nome,
+/// dado o `prefix` esperado (`file_prefix`). `None` se o nome nao bater com
+/// o prefixo ou o timestamp nao for parseavel (ex: nomenclatura antiga,
+/// sem timestamp) — usado pra correlacionar um arquivo de versao com a
+/// entrada de historico mais proxima (duracao da sessao que o gerou).
+pub fn parse_version_timestamp(name: &str, prefix: &str) -> Option<DateTime<Utc>> {
+    let rest = name.strip_prefix(prefix)?.strip_suffix(".zip")?;
+    // O "Z" no formato e literal (sempre UTC, escrito por `version_file_name`
+    // via `Utc::now()`), nao o especificador `%Z`/`%z` — por isso parseia
+    // como `NaiveDateTime` e so depois assume UTC, em vez de
+    // `DateTime::parse_from_str` (que exigiria um offset de verdade no texto).
+    chrono::NaiveDateTime::parse_from_str(rest, "%Y%m%dT%H%M%SZ")
+        .ok()
+        .map(|naive| naive.and_utc())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +113,21 @@ mod tests {
         let sorted = vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()];
         assert_eq!(names_to_prune(&sorted, 2), &["a".to_string(), "b".to_string()]);
         assert_eq!(names_to_prune(&sorted, 10), &[] as &[String]);
+    }
+
+    #[test]
+    fn parse_version_timestamp_roundtrips_with_version_file_name() {
+        let ts = Utc.with_ymd_and_hms(2026, 7, 4, 19, 20, 14).unwrap();
+        let name = version_file_name(0, 1, ts);
+        assert_eq!(parse_version_timestamp(&name, &file_prefix(0, 1)), Some(ts));
+    }
+
+    #[test]
+    fn parse_version_timestamp_none_for_old_naming_or_wrong_prefix() {
+        assert_eq!(parse_version_timestamp("save-0.zip", "save-"), None);
+        assert_eq!(
+            parse_version_timestamp("save-1-20260704T192014Z.zip", "save-"),
+            None
+        );
     }
 }

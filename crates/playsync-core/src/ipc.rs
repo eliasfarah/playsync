@@ -75,6 +75,13 @@ pub struct BackupEntry {
     /// entao o restore cai pra "onde foi da ultima vez que fizemos backup".
     #[serde(default)]
     pub source_paths: Vec<PathBuf>,
+    /// Duracao real (segundos) da sessao de jogo — abrir ate fechar — que
+    /// disparou esse backup, quando foi automatico. `None` pra sync manual
+    /// (`playsync sync`/TUI) ou "sincronizar tudo", que nao tem uma sessao
+    /// associada. Ajuda a identificar se uma versao veio de progresso real
+    /// ou de um teste rapido (ver `Config::short_session_warning_secs`).
+    #[serde(default)]
+    pub session_duration_secs: Option<i64>,
 }
 
 /// Caminho do socket UDS usado para a comunicacao CLI <-> daemon.

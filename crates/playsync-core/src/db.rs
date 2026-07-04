@@ -39,13 +39,18 @@ impl HistoryDb {
             )",
             [],
         )?;
-        // Bancos de sessoes anteriores a essa coluna nao tem `source_paths`
-        // (o `CREATE TABLE IF NOT EXISTS` acima so vale pra banco novo) —
+        // Bancos de sessoes anteriores a essas colunas nao tem elas (o
+        // `CREATE TABLE IF NOT EXISTS` acima so vale pra banco novo) —
         // migracao idempotente: ignora o erro "duplicate column" se ja rodou.
-        match conn.execute("ALTER TABLE backups ADD COLUMN source_paths TEXT NOT NULL DEFAULT '[]'", []) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
-            Err(err) => return Err(err).context("falha ao migrar o schema de historico (source_paths)"),
+        for migration in [
+            "ALTER TABLE backups ADD COLUMN source_paths TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE backups ADD COLUMN session_duration_secs INTEGER",
+        ] {
+            match conn.execute(migration, []) {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column name") => {}
+                Err(err) => return Err(err).context("falha ao migrar o schema de historico"),
+            }
         }
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -54,8 +59,8 @@ impl HistoryDb {
         let source_paths = serde_json::to_string(&entry.source_paths)
             .context("falha ao serializar source_paths")?;
         self.conn.lock().unwrap().execute(
-            "INSERT INTO backups (app_id, name, timestamp, destination, success, source_paths)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO backups (app_id, name, timestamp, destination, success, source_paths, session_duration_secs)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 entry.app_id,
                 entry.name,
@@ -63,6 +68,7 @@ impl HistoryDb {
                 entry.destination,
                 entry.success as i64,
                 source_paths,
+                entry.session_duration_secs,
             ],
         )?;
         Ok(())
@@ -72,7 +78,7 @@ impl HistoryDb {
     pub fn last_backup(&self, app_id: u32) -> Result<Option<BackupEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT app_id, name, timestamp, destination, success, source_paths
+            "SELECT app_id, name, timestamp, destination, success, source_paths, session_duration_secs
              FROM backups WHERE app_id = ?1 ORDER BY timestamp DESC LIMIT 1",
         )?;
         let mut rows = stmt.query(params![app_id])?;
@@ -83,13 +89,31 @@ impl HistoryDb {
         }
     }
 
+    /// Entradas de historico de um AppID especifico (mais recente primeiro)
+    /// — usado por `restore --list-versions` pra correlacionar cada arquivo
+    /// de versao com a sessao que o gerou (ver `versions::parse_version_timestamp`).
+    pub fn entries_for_app(&self, app_id: u32, limit: u32) -> Result<Vec<BackupEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT app_id, name, timestamp, destination, success, source_paths, session_duration_secs
+             FROM backups WHERE app_id = ?1 ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![app_id, limit], row_to_entry)?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
     pub fn recent(&self, limit: u32) -> Result<Vec<BackupEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT app_id, name, timestamp, destination, success, source_paths
+            "SELECT app_id, name, timestamp, destination, success, source_paths, session_duration_secs
              FROM backups ORDER BY timestamp DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit], |row| row_to_entry(row))?;
+        let rows = stmt.query_map(params![limit], row_to_entry)?;
 
         let mut entries = Vec::new();
         for row in rows {
@@ -110,5 +134,6 @@ fn row_to_entry(row: &rusqlite::Row) -> rusqlite::Result<BackupEntry> {
         destination: row.get(3)?,
         success: row.get::<_, i64>(4)? != 0,
         source_paths,
+        session_duration_secs: row.get(6)?,
     })
 }
