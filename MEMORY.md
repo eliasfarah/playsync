@@ -1,5 +1,14 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Release v0.2.0 publicado
+
+Usuario perguntou se o release ja tinha sido atualizado com tudo isso —
+nao tinha (o `v0.1.0` era de antes do restore/TUI/fixes). Subida a versao
+pra `0.2.0` (minor bump, features novas de verdade, nao so patch) nos 3
+`Cargo.toml` via `workspace.package.version`, tag `v0.2.0` criada/empurrada,
+release publicado com tarball + `.deb` novos (binarios rebuilded, testes
+rodados antes). https://github.com/eliasfarah/playsync/releases/tag/v0.2.0
+
 Backup automático de saves da Steam pra nuvem, Linux, 100% background.
 Workspace Rust: `playsyncd` (daemon, `systemd --user`) + `playsync` (CLI/TUI) +
 `playsync-core` (lib compartilhada: deteccao Steam via `steamlocate`, historico
