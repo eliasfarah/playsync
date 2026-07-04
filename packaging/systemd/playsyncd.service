@@ -1,0 +1,26 @@
+[Unit]
+Description=PlaySync daemon — sincroniza saves de jogos Steam com a nuvem
+Documentation=https://github.com/yourname/playsync
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/playsyncd
+Restart=on-failure
+RestartSec=2
+
+# SEM ProtectSystem=/ProtectHome=/PrivateTmp=/ReadWritePaths=/ConfigurationDirectory=/
+# StateDirectory= de proposito. Testamos ao vivo: qualquer uma dessas diretivas
+# faz o systemd montar um namespace de mount privado — e, como efeito colateral
+# nao documentado claramente, o servico tambem ganha um user namespace proprio
+# (mesmo com PrivateUsers=no, que e o default). Isso quebra silenciosamente a
+# leitura de /proc/<pid>/environ de processos QUE NAO SAO FILHOS do daemon
+# (ex: os processos do jogo lancado pela Steam) — o read() nao da erro, so
+# volta vazio, entao o gatilho principal do PlaySync (ver watcher.rs) para de
+# funcionar sem nenhum log de erro. O daemon roda sem privilegios (UID do
+# usuario, nao root) de qualquer forma; os diretorios de config/estado sao
+# criados pelo proprio codigo Rust na primeira escrita (nao precisam que o
+# systemd os pre-crie).
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

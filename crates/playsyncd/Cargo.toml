@@ -1,0 +1,24 @@
+[package]
+name = "playsyncd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Daemon de background do PlaySync: observa a Steam e dispara sincronizacao de saves"
+
+[[bin]]
+name = "playsyncd"
+path = "src/main.rs"
+
+[dependencies]
+playsync-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-journald = "0.3"
+dirs = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+steamlocate = "2"

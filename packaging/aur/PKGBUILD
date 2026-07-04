@@ -1,0 +1,36 @@
+# Maintainer: Seu Nome <voce@example.com>
+pkgname=playsync
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Backup automatico de saves da Steam para a nuvem (daemon systemd --user + CLI/TUI)"
+arch=('x86_64')
+url="https://github.com/yourname/playsync"
+license=('MIT')
+depends=('gcc-libs' 'systemd')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/yourname/playsync/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    cargo fetch --locked --target "$CARCH-unknown-linux-gnu"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release --workspace
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    cargo test --frozen --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/playsync  "$pkgdir/usr/bin/playsync"
+    install -Dm755 target/release/playsyncd "$pkgdir/usr/bin/playsyncd"
+    install -Dm644 packaging/systemd/playsyncd.service \
+        "$pkgdir/usr/lib/systemd/user/playsyncd.service"
+}

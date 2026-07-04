@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/playsync-core",
+    "crates/playsyncd",
+    "crates/playsync-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["PlaySync contributors"]
+repository = "https://github.com/yourname/playsync"
+rust-version = "1.81"
+
+# Versões centralizadas: cada crate do workspace referencia
+# `{ workspace = true }` para nao divergir de versao entre si.
+[workspace.dependencies]
+playsync-core = { path = "crates/playsync-core" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "time", "process", "io-util", "sync"] }
+
+# Otimizado para binario pequeno/estatico (packaging via cargo-deb / AUR)
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

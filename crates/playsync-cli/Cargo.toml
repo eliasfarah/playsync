@@ -1,0 +1,46 @@
+[package]
+name = "playsync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI/TUI minimalista para interagir com o daemon playsyncd"
+
+[[bin]]
+name = "playsync"
+path = "src/main.rs"
+
+[dependencies]
+playsync-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+
+clap = { version = "4", features = ["derive"] }
+# Usamos `ratatui::crossterm` (re-exportado) em vez de uma dependencia
+# `crossterm` separada, pra nao arriscar duas versoes divergentes no grafo.
+ratatui = "0.30"
+
+# `cargo deb -p playsync` empacota os dois binarios do workspace + a unit do
+# systemd num unico .deb. Precisa rodar `cargo build --release --workspace`
+# antes, pra `target/release/playsyncd` existir.
+[package.metadata.deb]
+name = "playsync"
+maintainer = "PlaySync contributors <playsync@example.com>"
+copyright = "2026, PlaySync contributors"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+PlaySync observa a Steam em segundo plano (via systemd --user) e sincroniza \
+automaticamente os saves de jogos nativos e via Proton para a nuvem (Google \
+Drive, Box) assim que o jogo fecha, sem watcher continuo nas pastas de save."""
+assets = [
+    ["../../target/release/playsync", "usr/bin/", "755"],
+    ["../../target/release/playsyncd", "usr/bin/", "755"],
+    ["../../packaging/systemd/playsyncd.service", "usr/lib/systemd/user/", "644"],
+]
