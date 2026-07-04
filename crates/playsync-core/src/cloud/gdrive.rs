@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::ipc::CloudProvider;
 
-use super::CloudBackend;
+use super::{wait_for_redirect, CloudBackend, ReqwestHttpClient};
 
 const REDIRECT_PORT: u16 = 8085;
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
@@ -152,6 +152,76 @@ impl GoogleDriveBackend {
 
         Ok(token.access_token)
     }
+
+    /// Acha a pasta `name` dentro de `parent` (ou cria uma nova, se nao
+    /// existir ainda) e devolve o `id` dela. Idempotente entre chamadas —
+    /// nao ha cache local de ids, cada upload resolve a cadeia de pastas de
+    /// novo, mas isso e so uma chamada de API extra por nivel, aceitavel pro
+    /// volume de um backup de saves.
+    async fn ensure_folder(&self, access_token: &str, name: &str, parent: &str) -> Result<String> {
+        let escaped_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+        let query = format!(
+            "name = '{escaped_name}' and '{parent}' in parents \
+             and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        );
+
+        let mut url = oauth2::url::Url::parse("https://www.googleapis.com/drive/v3/files")
+            .expect("URL estatica valida");
+        url.query_pairs_mut()
+            .append_pair("q", &query)
+            .append_pair("fields", "files(id)");
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("falha ao procurar pasta no Google Drive")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao procurar pasta \"{name}\": {text}");
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .await
+            .context("resposta do Google Drive nao veio no formato JSON esperado")?;
+        if let Some(id) = parsed["files"][0]["id"].as_str() {
+            return Ok(id.to_string());
+        }
+
+        let metadata = serde_json::json!({
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent],
+        });
+        let response = self
+            .http
+            .post("https://www.googleapis.com/drive/v3/files")
+            .bearer_auth(access_token)
+            .json(&metadata)
+            .send()
+            .await
+            .context("falha ao criar pasta no Google Drive")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao criar pasta \"{name}\": {text}");
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .await
+            .context("resposta do Google Drive nao veio no formato JSON esperado")?;
+        parsed["id"]
+            .as_str()
+            .map(str::to_string)
+            .context("Google Drive nao devolveu o id da pasta criada")
+    }
 }
 
 impl Default for GoogleDriveBackend {
@@ -169,13 +239,29 @@ impl CloudBackend for GoogleDriveBackend {
     /// Upload simples (nao-resumavel) via Drive API v3. Serve bem pra arquivos
     /// pequenos/medios (saves compactados); saves gigantes vao precisar de
     /// upload resumavel mais adiante.
-    async fn upload(&self, local_path: &Path, remote_name: &str) -> Result<()> {
+    ///
+    /// `remote_path` tipo `PlaySync/<jogo>/save.zip`: os segmentos antes do
+    /// ultimo sao pastas, criadas (ou reaproveitadas, se ja existirem) antes
+    /// do upload em si.
+    async fn upload(&self, local_path: &Path, remote_path: &str) -> Result<()> {
         let access_token = self.access_token().await?;
+
+        let mut segments = remote_path.split('/').filter(|s| !s.is_empty());
+        let file_name = segments
+            .next_back()
+            .context("remote_path vazio — sem nome de arquivo")?;
+
+        let mut parent = "root".to_string();
+        for folder_name in segments {
+            parent = self.ensure_folder(&access_token, folder_name, &parent).await?;
+        }
+
         let bytes = tokio::fs::read(local_path)
             .await
             .with_context(|| format!("nao consegui ler {}", local_path.display()))?;
 
-        let metadata = serde_json::json!({ "name": remote_name }).to_string();
+        let metadata =
+            serde_json::json!({ "name": file_name, "parents": [parent] }).to_string();
         let body = build_multipart_body(&metadata, &bytes);
 
         let response = self
@@ -202,7 +288,7 @@ impl CloudBackend for GoogleDriveBackend {
             .await
             .context("resposta do Google Drive nao veio no formato JSON esperado")?;
         let file_id = parsed.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        tracing::info!(file_id, remote_name, "upload para o Google Drive concluido");
+        tracing::info!(file_id, remote_path, "upload para o Google Drive concluido");
 
         Ok(())
     }
@@ -303,80 +389,6 @@ fn save_token(token: &StoredToken) -> Result<()> {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
-}
-
-/// Sobe (bloqueante) um servidor HTTP so pra essa unica requisicao: a Steam
-/// nao esta envolvida aqui, e o "redirect_uri" de loopback que a Google
-/// registra pra apps Desktop (RFC 8252). Roda dentro de `spawn_blocking`
-/// porque `tiny_http` e sincrono.
-fn wait_for_redirect(port: u16) -> Result<(String, String)> {
-    let server = tiny_http::Server::http(("127.0.0.1", port))
-        .map_err(|err| anyhow::anyhow!("nao consegui escutar em 127.0.0.1:{port}: {err}"))?;
-
-    let request = server
-        .recv()
-        .context("servidor de callback OAuth2 encerrou sem receber nada")?;
-
-    let callback_url = format!("http://localhost{}", request.url());
-    let parsed = oauth2::url::Url::parse(&callback_url)
-        .context("URL de callback do navegador invalida")?;
-
-    let mut code = None;
-    let mut state = None;
-    for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => state = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    let response = tiny_http::Response::from_string(
-        "PlaySync autorizado. Pode fechar esta aba e voltar ao terminal.",
-    );
-    let _ = request.respond(response);
-
-    Ok((
-        code.context("callback do Google sem `code` na query string")?,
-        state.context("callback do Google sem `state` na query string")?,
-    ))
-}
-
-/// Adaptador entre `oauth2::AsyncHttpClient` e o `reqwest::Client` que ja
-/// existe no core (evita puxar a feature `reqwest` do crate `oauth2`, que
-/// traria uma segunda copia do reqwest — ver comentario no Cargo.toml).
-///
-/// Precisa ser um tipo local (nao uma closure): a regra do orfao impede
-/// `impl oauth2::AsyncHttpClient for reqwest::Client` diretamente aqui (os
-/// dois sao de outro crate), e uma closure fechando sobre `&reqwest::Client`
-/// esbarra num conflito de higher-ranked lifetimes com o `Send` que o
-/// `async_trait` exige. `reqwest::Client` clona barato (e um Arc por baixo).
-struct ReqwestHttpClient(reqwest::Client);
-
-impl<'c> oauth2::AsyncHttpClient<'c> for ReqwestHttpClient {
-    type Error = HttpAdapterError;
-    type Future =
-        std::pin::Pin<Box<dyn std::future::Future<Output = Result<oauth2::HttpResponse, Self::Error>> + Send + 'c>>;
-
-    fn call(&'c self, request: oauth2::HttpRequest) -> Self::Future {
-        Box::pin(async move {
-            let response = self.0.execute(request.try_into()?).await?;
-
-            let mut builder = oauth2::http::Response::builder().status(response.status());
-            for (name, value) in response.headers().iter() {
-                builder = builder.header(name, value);
-            }
-            Ok(builder.body(response.bytes().await?.to_vec())?)
-        })
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum HttpAdapterError {
-    #[error("erro de rede: {0}")]
-    Reqwest(#[from] reqwest::Error),
-    #[error("resposta http invalida: {0}")]
-    Http(#[from] oauth2::http::Error),
 }
 
 /// Monta o corpo `multipart/related` exigido pelo upload multipart da Drive

@@ -123,7 +123,11 @@ async fn cloud_connect(provider: &str) -> Result<()> {
                 .connect()
                 .await
         }
-        CloudProvider::Box => bail!("fluxo OAuth2 do Box ainda nao implementado"),
+        CloudProvider::Box => {
+            playsync_core::cloud::box_com::BoxBackend::new()
+                .connect()
+                .await
+        }
     }
 }
 
@@ -144,7 +148,7 @@ async fn cloud_test_upload(provider: &str) -> Result<()> {
     let tmp = std::env::temp_dir().join("playsync-test-upload.zip");
     std::fs::write(&tmp, EMPTY_ZIP)?;
 
-    let result = backend.upload(&tmp, "playsync-test-upload.zip").await;
+    let result = backend.upload(&tmp, "PlaySync/playsync-test-upload.zip").await;
     let _ = std::fs::remove_file(&tmp);
     result?;
 

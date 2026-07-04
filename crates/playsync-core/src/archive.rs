@@ -1,27 +1,28 @@
-//! Compacta um save (arquivo ou diretorio inteiro, recursivamente) num .zip
-//! temporario antes do upload. Os backends de nuvem so sabem enviar arquivos
-//! unicos; a maioria dos saves reais e um diretorio (ex: prefixo Proton).
+//! Compacta um save (arquivo ou diretorio inteiro, recursivamente) num .zip.
+//! Os backends de nuvem so sabem enviar arquivos unicos; a maioria dos saves
+//! reais e um diretorio (ex: prefixo Proton).
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
-/// Compacta `source` num .zip novo dentro do diretorio temporario do sistema.
-/// O chamador e responsavel por apagar o arquivo retornado depois do upload.
-pub fn zip_path(source: &Path) -> Result<PathBuf> {
+/// Compacta `source` em `dest` (sobrescrevendo se ja existir). Cria os
+/// diretorios pais de `dest` conforme necessario — e assim que vira tambem o
+/// backup local (`dest` fica dentro de `~/PlaySync/<jogo>/...`).
+pub fn zip_path(source: &Path, dest: &Path) -> Result<()> {
     anyhow::ensure!(source.exists(), "{} nao existe", source.display());
 
-    let staging = std::env::temp_dir().join("playsync-uploads");
-    std::fs::create_dir_all(&staging)
-        .with_context(|| format!("nao consegui criar {}", staging.display()))?;
-    let zip_path = staging.join(format!("{}.zip", uuid::Uuid::new_v4()));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("nao consegui criar {}", parent.display()))?;
+    }
 
-    let zip_file = File::create(&zip_path)
-        .with_context(|| format!("nao consegui criar {}", zip_path.display()))?;
+    let zip_file = File::create(dest)
+        .with_context(|| format!("nao consegui criar {}", dest.display()))?;
     let mut writer = ZipWriter::new(zip_file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
@@ -54,7 +55,7 @@ pub fn zip_path(source: &Path) -> Result<PathBuf> {
     }
 
     writer.finish().context("falha ao finalizar o zip")?;
-    Ok(zip_path)
+    Ok(())
 }
 
 fn add_file(
@@ -94,11 +95,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("save.dat");
         std::fs::write(&file, b"hello").unwrap();
+        let dest = dir.path().join("out").join("save.zip");
 
-        let zip_path = zip_path(&file).unwrap();
-        assert_eq!(entry_names(&zip_path), HashSet::from(["save.dat".to_string()]));
-
-        std::fs::remove_file(zip_path).unwrap();
+        zip_path(&file, &dest).unwrap();
+        assert_eq!(entry_names(&dest), HashSet::from(["save.dat".to_string()]));
     }
 
     #[test]
@@ -108,20 +108,34 @@ mod tests {
         std::fs::create_dir_all(save_dir.join("sub")).unwrap();
         std::fs::write(save_dir.join("file1.txt"), b"a").unwrap();
         std::fs::write(save_dir.join("sub").join("file2.txt"), b"b").unwrap();
+        let dest = dir.path().join("out.zip");
 
-        let zip_path = zip_path(&save_dir).unwrap();
-        let names = entry_names(&zip_path);
+        zip_path(&save_dir, &dest).unwrap();
+        let names = entry_names(&dest);
         assert!(names.contains("LocalLow/"));
         assert!(names.contains("LocalLow/file1.txt"));
         assert!(names.contains("LocalLow/sub/"));
         assert!(names.contains("LocalLow/sub/file2.txt"));
+    }
 
-        std::fs::remove_file(zip_path).unwrap();
+    #[test]
+    fn overwrites_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("save.dat");
+        let dest = dir.path().join("save.zip");
+
+        std::fs::write(&file, b"first").unwrap();
+        zip_path(&file, &dest).unwrap();
+        std::fs::write(&file, b"second content, different size").unwrap();
+        zip_path(&file, &dest).unwrap();
+
+        assert_eq!(entry_names(&dest), HashSet::from(["save.dat".to_string()]));
     }
 
     #[test]
     fn errors_on_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
         let missing = Path::new("/nonexistent/playsync-test-path");
-        assert!(zip_path(missing).is_err());
+        assert!(zip_path(missing, &dir.path().join("out.zip")).is_err());
     }
 }

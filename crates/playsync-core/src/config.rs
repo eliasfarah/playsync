@@ -16,6 +16,9 @@ pub struct Config {
     /// Segundos de espera apos o jogo fechar antes de disparar o backup.
     /// Evita sync duplicado em fechamentos rapidos (ex: crash seguido de relaunch).
     pub sync_debounce_secs: u64,
+    /// Raiz do backup local (um "PlaySync/<jogo>/" espelhando a estrutura da
+    /// nuvem). `None` usa o default (`local_backup_root()`).
+    pub local_backup_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -24,6 +27,7 @@ impl Default for Config {
             cloud_provider: None,
             ignored_app_ids: Vec::new(),
             sync_debounce_secs: 5,
+            local_backup_dir: None,
         }
     }
 }
@@ -43,6 +47,16 @@ impl Config {
     pub fn state_dir() -> Result<PathBuf> {
         let dir = dirs::state_dir().context("nao encontrei XDG_STATE_HOME/~/.local/state")?;
         Ok(dir.join("playsync"))
+    }
+
+    /// Raiz do backup local: `~/PlaySync` por padrao (facil de achar/navegar,
+    /// espelhando a pasta "PlaySync" criada do lado da nuvem), ou o caminho
+    /// configurado em `local_backup_dir`.
+    pub fn local_backup_root(&self) -> Result<PathBuf> {
+        match &self.local_backup_dir {
+            Some(dir) => Ok(dir.clone()),
+            None => Ok(dirs::home_dir().context("nao encontrei $HOME")?.join("PlaySync")),
+        }
     }
 
     pub fn load_or_default() -> Result<Self> {

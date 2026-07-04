@@ -2,6 +2,7 @@
 //! o backend de nuvem configurado e registra o resultado no historico.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use playsync_core::cloud::{self, CloudBackend};
 use playsync_core::config::Config;
 use playsync_core::db::HistoryDb;
 use playsync_core::ipc::{BackupEntry, CloudProvider, GameStatus, SyncStatus};
+use playsync_core::naming;
 use playsync_core::steam::{self, GameSave};
 use tokio::sync::Mutex;
 
@@ -63,63 +65,77 @@ impl SyncEngine {
             .filter(|g| !ignored.contains(&g.app_id))
             .collect();
 
-        let provider = self.config.lock().await.cloud_provider.clone();
+        let config = self.config.lock().await;
+        let provider = config.cloud_provider.clone();
+        let local_root = match config.local_backup_root() {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::error!(%err, "nao consegui resolver a raiz do backup local");
+                return;
+            }
+        };
+        drop(config);
+
         let backend = provider.as_deref().and_then(parse_provider).map(cloud::backend_for);
 
         for game in targets {
-            self.sync_one(&game, backend.as_deref()).await;
+            self.sync_one(&game, backend.as_deref(), &local_root).await;
         }
     }
 
-    async fn sync_one(&self, game: &GameSave, backend: Option<&dyn CloudBackend>) {
+    /// Compacta cada `save_paths` do jogo em `~/PlaySync/<jogo>/` (backup
+    /// local, sempre) e, se houver um provedor conectado, sobe o mesmo zip
+    /// pra `PlaySync/<jogo>/` la tambem — a mesma estrutura de pastas dos
+    /// dois lados, so que uma e local e a outra e na nuvem.
+    async fn sync_one(&self, game: &GameSave, backend: Option<&dyn CloudBackend>, local_root: &Path) {
         if game.save_paths.is_empty() {
             tracing::debug!(app_id = game.app_id, "nenhuma pasta de save conhecida, ignorando");
             return;
         }
 
-        let (destination, success, message) = match backend {
-            None => (
-                "nenhum".to_string(),
-                false,
-                "nenhum provedor de nuvem configurado (rode `playsync cloud connect`)".to_string(),
-            ),
-            Some(backend) => {
-                let multiple = game.save_paths.len() > 1;
-                let mut last_err = None;
-                for (idx, path) in game.save_paths.iter().enumerate() {
-                    let remote_name = if multiple {
-                        format!("{} ({idx}).zip", game.name)
-                    } else {
-                        format!("{}.zip", game.name)
-                    };
+        let sanitized_name = naming::sanitize(&game.name);
+        let multiple = game.save_paths.len() > 1;
+        let mut last_err = None;
 
-                    let zip_result = {
-                        let path = path.clone();
-                        tokio::task::spawn_blocking(move || archive::zip_path(&path)).await
-                    };
-                    let zip_path = match zip_result {
-                        Ok(Ok(zip_path)) => zip_path,
-                        Ok(Err(err)) => {
-                            last_err = Some(format!("falha ao compactar {}: {err}", path.display()));
-                            continue;
-                        }
-                        Err(err) => {
-                            last_err = Some(format!("tarefa de compactacao falhou: {err}"));
-                            continue;
-                        }
-                    };
+        for (idx, path) in game.save_paths.iter().enumerate() {
+            let file_name = if multiple {
+                format!("save-{idx}.zip")
+            } else {
+                "save.zip".to_string()
+            };
+            let local_dest = local_root.join(&sanitized_name).join(&file_name);
 
-                    if let Err(err) = backend.upload(&zip_path, &remote_name).await {
-                        last_err = Some(err.to_string());
-                    }
-                    let _ = tokio::fs::remove_file(&zip_path).await;
+            let zip_result = {
+                let path = path.clone();
+                let local_dest = local_dest.clone();
+                tokio::task::spawn_blocking(move || archive::zip_path(&path, &local_dest)).await
+            };
+            match zip_result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    last_err = Some(format!("falha ao compactar {}: {err}", path.display()));
+                    continue;
                 }
-                match last_err {
-                    None => (format!("{:?}", backend.provider()), true, "ok".to_string()),
-                    Some(err) => (format!("{:?}", backend.provider()), false, err),
+                Err(err) => {
+                    last_err = Some(format!("tarefa de compactacao falhou: {err}"));
+                    continue;
                 }
             }
+
+            if let Some(backend) = backend {
+                let remote_path = format!("PlaySync/{sanitized_name}/{file_name}");
+                if let Err(err) = backend.upload(&local_dest, &remote_path).await {
+                    last_err = Some(err.to_string());
+                }
+            }
+        }
+
+        let destination = match backend {
+            Some(backend) => format!("Local + {:?}", backend.provider()),
+            None => "Local".to_string(),
         };
+        let success = last_err.is_none();
+        let message = last_err.unwrap_or_else(|| "ok".to_string());
 
         if !success {
             tracing::warn!(app_id = game.app_id, %message, "sincronizacao falhou");

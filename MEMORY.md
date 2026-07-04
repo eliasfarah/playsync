@@ -62,29 +62,91 @@ mostra "sim" apos o fix, "nao" antes). Zips temporarios confirmados apagados
 depois. Esse era exatamente o jogo que dava erro "nao consegui ler ...
 AppData/LocalLow" nos logs do daemon antes do fix.
 
-Nomeacao do remote: se o jogo tem 1 so save_path, sobe como `{nome}.zip`; se
-tem mais de um, `{nome} (0).zip`, `{nome} (1).zip` etc (evita colisao de nomes
-no Drive, que nao aplica unicidade sozinho).
-
-Backend do Box.com (`cloud/box_com.rs`) continua stub de proposito (`bail!`).
-
 Nota a parte, achada durante a validacao (nao mexida, so registrada): a coluna
 "STATUS" de `playsync status` mostra "nunca sincronizado" pra todo mundo mesmo
 quando ha backup recente na coluna "ULTIMO BACKUP" — parece nao ler
 `sync_status` corretamente. Bug de exibicao, nao afeta o backup em si.
 
+## Organizacao em pastas (local + nuvem) + backend do Box: RESOLVIDO (2026-07-04)
+
+Pedido do usuario: backup local **e** na nuvem organizados como
+`PlaySync/<jogo sanitizado>/<arquivo>`, sem caractere problematico no nome do
+jogo (nomes reais tem `™`, `:`, apostrofo).
+
+- `playsync-core/src/naming.rs` (novo): `sanitize()` — remove `™`/`®`/`©`/`:`,
+  troca `/ \ * ? " < > |` por `_`, colapsa espaco, mantem acento/apostrofo.
+- `Config::local_backup_root()` (novo, `config.rs`): `~/PlaySync` por padrao,
+  ou `local_backup_dir` no config.toml se setado.
+- `archive::zip_path()` mudou de assinatura: agora recebe `(source, dest)` e
+  escreve direto no destino (sobrescrevendo), em vez de gerar um path
+  temporario que o chamador tinha que apagar — o "temp" virou o backup local
+  de verdade, nao se apaga mais depois do upload.
+- `CloudBackend::upload(local_path, remote_path)`: `remote_path` agora e um
+  caminho logico tipo `PlaySync/<jogo>/save.zip` — os segmentos antes do
+  ultimo sao pastas, criadas sob demanda (`ensure_folder` em cada backend).
+- `sync.rs::sync_one`: pra cada `save_path`, zipa em
+  `~/PlaySync/<sanitizado>/save.zip` (ou `save-{idx}.zip` se o jogo tiver mais
+  de um save_path) e, se tiver backend configurado, sobe o mesmo zip pra
+  `PlaySync/<sanitizado>/<mesmo arquivo>` la. Historico agora registra destino
+  `"Local"` (sem nuvem) ou `"Local + GoogleDrive"`/`"Local + Box"`.
+- Refatorado `wait_for_redirect`/`ReqwestHttpClient`/`HttpAdapterError` de
+  `gdrive.rs` pra `cloud/mod.rs` (`pub(crate)`), compartilhado entre os dois
+  backends OAuth2.
+
+**Box.com implementado** (`cloud/box_com.rs`, antes stub): Authorization Code
+puro (sem PKCE, app confidencial com secret) em `localhost:8086` (Drive usa
+8085). Credenciais do usuario em `~/.config/playsync/box_client_secret.json`
+(formato proprio, flat: `{"client_id","client_secret"}`, 0600 — NAO commitar).
+Upload via Box Content API (`multipart/form-data`, precisou habilitar a
+feature `multipart` do reqwest). Pasta encontrada/criada via
+`GET /folders/{id}/items` (Box nao filtra por nome no servidor como o Drive).
+
+**Gotcha real da API do Box** (so apareceu testando ao vivo, a doc oficial diz
+o contrario): no 409 de upload de arquivo duplicado, a doc lista
+`context_info.conflicts` como **array**, mas a resposta real e um **objeto
+solto** (`conflicts.id`, nao `conflicts[0].id`). Codigo tenta os dois formatos
+(`conflicts["id"].as_str().or_else(|| conflicts[0]["id"].as_str())`) — sem
+isso o fallback de "sobrescrever versao existente" falhava sempre com
+"sem id do arquivo existente". Confirmado com curl bruto reproduzindo o 409.
+
+**Validado ao vivo, os dois provedores:**
+- Google Drive: pasta `PlaySync/` + `DARK SOULS II Scholar of the First Sin/`
+  criadas na raiz do Drive de verdade (confirmado via API), 3 zips dentro.
+- Box: `playsync cloud connect box` (usuario confirmou redirect URI
+  `http://localhost:8086` ja cadastrado no app), `cloud test-upload box` (cria
+  `PlaySync/playsync-test-upload.zip`), rodado 2x seguidas pra confirmar que a
+  segunda vira "nova versao" (nao 409) — confirmado. Depois `playsync sync
+  --app-id 335300` com `cloud_provider = "box"` no config: 3 uploads reais,
+  pasta do jogo criada dentro de `PlaySync/`, tudo confirmado via API do Box.
+- Local: `~/PlaySync/DARK SOULS II Scholar of the First Sin/save-{0,1,2}.zip`
+  confirmado no disco, mesma estrutura dos dois lados da nuvem.
+
+**Lixo deixado no Drive de antes do fix** (nao apagado, so registrado): 3
+arquivos soltos na raiz do "Meu Drive" do formato `DARK SOULS™ II: Scholar of
+the First Sin (0/1/2).zip`, de quando o upload ainda ia direto pra raiz sem
+pasta. Sao orfaos agora — o usuario pode apagar manualmente quando quiser.
+
+`uuid` removido do workspace (nao usado mais depois que `zip_path` parou de
+gerar nome aleatorio).
+
 ## Proxima tarefa em aberto
 
 Empacotar (.deb/AUR) — ha um diretorio `packaging/` com stubs de `aur` e
-`systemd`, ainda nao explorado a fundo nesta sessao.
+`systemd`, ainda nao explorado a fundo nesta sessao. O usuario passou o repo
+real: `https://github.com/eliasfarah/playsync.git` (o PKGBUILD ainda aponta
+pro placeholder `yourname` — precisa atualizar antes de tentar buildar o
+pacote).
 
 ## Maquina de dev (hostname "gaming", Arch Linux)
 
 - Binarios instalados em `~/.local/bin/{playsync,playsyncd}` (build release,
   atualizados nesta sessao com o fix do zip)
 - Unit em `~/.config/systemd/user/playsyncd.service`, enabled + active
-- O repo tem `.git` proprio (auto-inicializado, vazio, zero commits — nunca foi
-  pedido pra commitar, nao assumir que pode)
+- Repo commitado (2026-07-04, commit `68bc211`, autor "Elias Farah" configurado
+  localmente so neste repo, `git config user.*` sem `--global`). Sem remote
+  ainda — nao existe `github.com/yourname/playsync` de verdade, entao o
+  PKGBUILD em `packaging/aur/` nao pode ser testado ate ter um repo real com
+  release/tag.
 
 ## Como validar antes de dizer "pronto"
 
