@@ -165,6 +165,20 @@ github.com/eliasfarah/playsync/releases/tag/v0.1.0 com
 `playsync-0.1.0-x86_64-linux.tar.gz` anexado (binarios + unit systemd + README
 + LICENSE).
 
+## README bilingue + `.deb` no release: RESOLVIDO (2026-07-04)
+
+README reescrito: ingles primeiro (`## English`), pt-BR depois (`##
+PlaySync (PT-BR)`), com link cruzado nas duas pontas, badges (license/release/
+rust) e um aviso de "Status: v0.1.0, recente". `.deb` gerado com `cargo-deb`
+(instalado via `cargo install cargo-deb`) e anexado ao release `v0.1.0`.
+
+Achado corrigido no processo: `cargo-deb` com `depends = "$auto"` (Cargo.toml
+da `playsync-cli`) resolve pra `Depends:` **vazio** quando rodado numa Arch
+(sem `dpkg-shlibdeps` instalado — so existe em sistemas Debian-like). Trocado
+pra `depends = "libc6"` explicito, confirmado com `ldd` nos dois binarios que
+so linkam contra `libc.so.6`/`libgcc_s.so.1`/`libm.so.6` (todas essenciais em
+qualquer Debian/Ubuntu, `libc6` cobre o caso que importa).
+
 ## Achado (nao resolvido): `makepkg` do PKGBUILD falha ao linkar
 
 Testando o PKGBUILD de ponta a ponta (`makepkg -f`, fora do escopo pedido, so
