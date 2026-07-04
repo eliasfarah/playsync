@@ -34,7 +34,12 @@ maintainer = "PlaySync contributors <playsync@example.com>"
 copyright = "2026, PlaySync contributors"
 section = "utils"
 priority = "optional"
-depends = "$auto"
+# "$auto" (via dpkg-shlibdeps) so funciona rodando cargo-deb numa maquina
+# Debian/Ubuntu de verdade; numa Arch (sem dpkg-shlibdeps) ele silenciosamente
+# vira Depends vazio. `ldd` nos binarios so mostra libc/libgcc_s/libm — todas
+# essenciais em qualquer sistema Debian-like — entao listamos so a libc6
+# explicitamente em vez de confiar no auto-detect.
+depends = "libc6"
 extended-description = """\
 PlaySync observa a Steam em segundo plano (via systemd --user) e sincroniza \
 automaticamente os saves de jogos nativos e via Proton para a nuvem (Google \

@@ -1,11 +1,229 @@
 # PlaySync
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/eliasfarah/playsync)](https://github.com/eliasfarah/playsync/releases/latest)
+[![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
+
+Automatic cloud backup for Steam game saves, on Linux — fully in the
+background. **[Português abaixo ⬇](#playsync-pt-br)**
+
+---
+
+## English
+
+A `systemd --user` daemon detects when a game starts and stops, and syncs its
+save data (native or via Proton) as soon as it closes — no continuous
+filesystem watcher, no manual steps once it's set up.
+
+### Features
+
+- Automatic detection of installed Steam games and their save folders (Steam
+  libraries, Proton prefixes, Steam Cloud mirror).
+- Game start/stop trigger with zero Steam configuration required.
+- Local **and** cloud backup, mirrored identically on both sides:
+  ```
+  PlaySync/
+    DARK SOULS II Scholar of the First Sin/
+      save-0.zip
+      save-1.zip
+    Marvel's Spider-Man 2/
+      save.zip
+  ```
+  (game names are sanitized — no characters that would trip up a filesystem
+  or cloud provider.)
+- Cloud backends: **Google Drive** and **Box** (OAuth2; the app only ever
+  sees the files it creates itself).
+- Simple CLI (`playsync status` / `sync` / `history` / `cloud connect`).
+- Backup history kept in sqlite.
+
+> **Status:** early (`v0.1.0`), built and used daily on a single real
+> machine. Should work on any modern Linux + systemd setup, but hasn't been
+> tested across distros yet — issues/PRs welcome.
+
+### How it works
+
+A Rust workspace with three crates:
+
+| Crate | What it is |
+|---|---|
+| `playsyncd` | Daemon (`systemd --user`) — detects the game starting/stopping and triggers the backup |
+| `playsync` | CLI/TUI — talks to the daemon over a Unix socket (`$XDG_RUNTIME_DIR/playsync.sock`) |
+| `playsync-core` | Shared library: Steam detection, sqlite history, IPC protocol, cloud backends |
+
+The start/stop trigger works by polling `/proc/*/environ` looking for
+`SteamAppId`/`SteamGameId` — the same signal MangoHud/gamescope rely on — so
+it doesn't depend on any Steam configuration file.
+
+### Installation
+
+#### From source
+
+Prerequisites: [Rust](https://rustup.rs/) (edition 2021, `rust-version =
+"1.81"` or newer).
+
+```bash
+git clone https://github.com/eliasfarah/playsync.git
+cd playsync
+cargo build --release --workspace
+```
+
+Install the binaries and the `systemd --user` unit:
+
+```bash
+install -Dm755 target/release/playsync  ~/.local/bin/playsync
+install -Dm755 target/release/playsyncd ~/.local/bin/playsyncd
+install -Dm644 packaging/systemd/playsyncd.service \
+  ~/.config/systemd/user/playsyncd.service
+
+systemctl --user daemon-reload
+systemctl --user enable --now playsyncd
+```
+
+> **Important:** do not add `ProtectSystem=`, `ProtectHome=`, `PrivateTmp=`
+> or similar directives to the systemd unit. Those put the daemon in a
+> separate mount/user namespace and silently break reading
+> `/proc/<pid>/environ` for processes that aren't its children — meaning the
+> core trigger stops working with no error logged anywhere.
+> `NoNewPrivileges=yes` is safe and already enabled in the provided unit.
+
+#### Prebuilt binaries
+
+Download `playsync-<version>-x86_64-linux.tar.gz` from the [latest
+release](https://github.com/eliasfarah/playsync/releases/latest) — it
+contains both binaries, the systemd unit, README and LICENSE. Follow the same
+`install -Dm755`/`systemctl` steps above instead of building from source.
+
+#### `.deb` package
+
+Download the `.deb` from the [latest
+release](https://github.com/eliasfarah/playsync/releases/latest) and:
+
+```bash
+sudo apt install ./playsync_<version>_amd64.deb
+```
+
+Or build it yourself:
+
+```bash
+cargo install cargo-deb
+cargo build --release --workspace
+cargo deb -p playsync --no-build
+```
+
+#### Arch Linux (AUR)
+
+```bash
+cd packaging/aur
+makepkg -si
+```
+
+(uses this repo's `PKGBUILD` — requires a published `vX.Y.Z` GitHub tag
+matching `pkgver`.)
+
+> **Known issue:** `makepkg` currently fails to link due to a build quirk in
+> a transitive TLS dependency (`aws-lc-sys`) that doesn't reproduce under a
+> plain `cargo build` — see the project's `MEMORY.md` for what's been ruled
+> out so far. Building from source or using the prebuilt binaries/`.deb`
+> works fine in the meantime.
+
+### Initial setup
+
+#### Google Drive
+
+1. Create a project and an **OAuth client ID** of type *Desktop app* at
+   [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
+2. Add `http://localhost:8085` as a redirect URI.
+3. Download the credentials JSON and save it as
+   `~/.config/playsync/gdrive_client_secret.json`.
+4. Connect:
+   ```bash
+   playsync cloud connect google-drive
+   ```
+   This opens your browser to authorize; the token is stored in
+   `~/.config/playsync/tokens/gdrive.json` (mode `0600`).
+
+#### Box
+
+1. Create a **Custom App** at
+   [app.box.com/developers/console](https://app.box.com/developers/console)
+   with "User Authentication (OAuth 2.0)".
+2. Add `http://localhost:8086` as a redirect URI.
+3. Save `client_id`/`client_secret` to
+   `~/.config/playsync/box_client_secret.json`:
+   ```json
+   { "client_id": "...", "client_secret": "..." }
+   ```
+4. Connect:
+   ```bash
+   playsync cloud connect box
+   ```
+
+Only one provider is active at a time (whichever `cloud connect` succeeded
+most recently).
+
+### Usage
+
+```bash
+playsync status              # table: game, last backup, sync status
+playsync sync                # force-sync all eligible games now
+playsync sync --app-id ID    # force-sync a single game (Steam AppID)
+playsync history             # recent backup history (success/failure, destination)
+playsync history --limit N   # history with a custom limit (default: 20)
+playsync cloud connect <google-drive|box>      # (re)authorize a provider
+playsync cloud test-upload <google-drive|box>  # sanity-check the OAuth2 + upload pipeline
+```
+
+Day to day, once set up, no command is needed — the daemon detects the game
+closing and syncs on its own after a debounce (5s by default, configurable).
+
+#### Optional configuration
+
+`~/.config/playsync/config.toml`:
+
+```toml
+cloud_provider = "google-drive"   # or "box" — set by `cloud connect`
+ignored_app_ids = [12345]         # AppIDs to never sync
+sync_debounce_secs = 5            # wait after the game closes before syncing
+local_backup_dir = "/custom/path" # default: ~/PlaySync
+```
+
+### Uninstalling
+
+```bash
+systemctl --user disable --now playsyncd
+rm ~/.config/systemd/user/playsyncd.service
+systemctl --user daemon-reload
+
+rm ~/.local/bin/playsync ~/.local/bin/playsyncd
+
+# Config, OAuth2 credentials and tokens:
+rm -rf ~/.config/playsync
+
+# Backup history (sqlite):
+rm -rf ~/.local/state/playsync
+```
+
+Backups in `~/PlaySync/` (or your configured `local_backup_dir`) are **not**
+deleted by any of the steps above — they're your files, remove them manually
+if you want to. The same goes for anything already uploaded to the cloud
+(the `PlaySync/` folder in Google Drive/Box).
+
+### License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+## PlaySync (PT-BR)
+
+**[⬆ English version above](#playsync)**
+
 Backup automático de saves de jogos Steam para a nuvem, no Linux — 100% em
 segundo plano. Um daemon (`systemd --user`) detecta quando um jogo abre e
 fecha, e sincroniza os saves (nativos ou via Proton) assim que ele fecha, sem
 precisar de watcher contínuo nas pastas de save.
 
-## Recursos
+### Recursos
 
 - Detecção automática de jogos instalados e suas pastas de save (bibliotecas
   Steam, Proton, espelho da Steam Cloud).
@@ -26,7 +244,11 @@ precisar de watcher contínuo nas pastas de save.
 - CLI simples (`playsync status` / `sync` / `history` / `cloud connect`).
 - Histórico de backups em sqlite.
 
-## Como funciona
+> **Status:** projeto recente (`v0.1.0`), feito e usado no dia a dia numa
+> máquina real. Deve funcionar em qualquer Linux moderno com systemd, mas
+> ainda não foi testado em outras distros — issues/PRs são bem-vindos.
+
+### Como funciona
 
 Workspace Rust com três crates:
 
@@ -40,9 +262,9 @@ O gatilho de abrir/fechar jogo funciona por polling em `/proc/*/environ`
 procurando `SteamAppId`/`SteamGameId` (o mesmo sinal que MangoHud/gamescope
 usam) — não depende de nenhum arquivo de configuração da Steam.
 
-## Instalação
+### Instalação
 
-### A partir do código-fonte
+#### A partir do código-fonte
 
 Pré-requisitos: [Rust](https://rustup.rs/) (edition 2021, `rust-version =
 "1.81"` ou mais novo).
@@ -72,7 +294,23 @@ systemctl --user enable --now playsyncd
 > ou seja, o gatilho principal para de funcionar sem nenhum log de erro.
 > `NoNewPrivileges=yes` é seguro e já vem habilitado na unit fornecida.
 
-### Pacote `.deb`
+#### Binários prontos
+
+Baixe `playsync-<versão>-x86_64-linux.tar.gz` na [última
+release](https://github.com/eliasfarah/playsync/releases/latest) — traz os
+dois binários, a unit do systemd, README e LICENSE. Siga os mesmos passos de
+`install -Dm755`/`systemctl` acima em vez de compilar do zero.
+
+#### Pacote `.deb`
+
+Baixe o `.deb` na [última
+release](https://github.com/eliasfarah/playsync/releases/latest) e:
+
+```bash
+sudo apt install ./playsync_<versão>_amd64.deb
+```
+
+Ou gere o seu:
 
 ```bash
 cargo install cargo-deb
@@ -80,10 +318,7 @@ cargo build --release --workspace
 cargo deb -p playsync --no-build
 ```
 
-Gera um `.deb` com os dois binários e a unit do systemd
-(`crates/playsync-cli/Cargo.toml` tem os metadados do pacote).
-
-### Arch Linux (AUR)
+#### Arch Linux (AUR)
 
 ```bash
 cd packaging/aur
@@ -93,9 +328,16 @@ makepkg -si
 (usa o `PKGBUILD` deste repo — requer uma tag `vX.Y.Z` publicada no GitHub
 correspondente a `pkgver`.)
 
-## Configuração inicial
+> **Problema conhecido:** o `makepkg` atualmente falha ao linkar por causa de
+> uma peculiaridade de build numa dependência transitiva de TLS
+> (`aws-lc-sys`) que não reproduz num `cargo build` comum — veja o
+> `MEMORY.md` do projeto pra ver o que já foi descartado como causa.
+> Compilar do fonte ou usar os binários/`.deb` prontos funciona normalmente
+> enquanto isso.
 
-### Google Drive
+### Configuração inicial
+
+#### Google Drive
 
 1. Crie um projeto e um **OAuth client ID** do tipo *Desktop app* em
    [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
@@ -109,7 +351,7 @@ correspondente a `pkgver`.)
    Isso abre o navegador pra autorizar; o token fica em
    `~/.config/playsync/tokens/gdrive.json` (permissão `0600`).
 
-### Box
+#### Box
 
 1. Crie um **Custom App** em
    [app.box.com/developers/console](https://app.box.com/developers/console)
@@ -127,7 +369,7 @@ correspondente a `pkgver`.)
 
 Só um provedor fica ativo por vez (o último `cloud connect` bem-sucedido).
 
-## Uso
+### Uso
 
 ```bash
 playsync status              # tabela: jogo, ultimo backup, status de sync
@@ -135,7 +377,7 @@ playsync sync                # forca sync de todos os jogos elegiveis agora
 playsync sync --app-id ID    # forca sync so de um jogo (AppID da Steam)
 playsync history             # historico recente de backups (sucesso/falha, destino)
 playsync history --limit N   # historico com um limite customizado (padrao: 20)
-playsync cloud connect <google-drive|box>   # (re)autoriza um provedor
+playsync cloud connect <google-drive|box>      # (re)autoriza um provedor
 playsync cloud test-upload <google-drive|box>  # valida o pipeline OAuth2 + upload
 ```
 
@@ -143,7 +385,7 @@ No dia a dia, depois de configurado, nenhum comando é necessário — o daemon
 detecta o jogo fechando e sincroniza sozinho após um debounce (5s por
 padrão, configurável).
 
-### Configuração opcional
+#### Configuração opcional
 
 `~/.config/playsync/config.toml`:
 
@@ -154,7 +396,7 @@ sync_debounce_secs = 5            # espera apos fechar o jogo antes de sincroniz
 local_backup_dir = "/caminho/custom"  # padrao: ~/PlaySync
 ```
 
-## Desinstalação
+### Desinstalação
 
 ```bash
 systemctl --user disable --now playsyncd
@@ -175,6 +417,6 @@ apagados por nenhum dos passos acima — são seus arquivos, apague manualmente
 se quiser. O mesmo vale para os arquivos já enviados à nuvem (pasta
 `PlaySync/` no Google Drive/Box).
 
-## Licença
+### Licença
 
 MIT — veja [LICENSE](LICENSE).
