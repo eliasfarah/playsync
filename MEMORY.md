@@ -135,6 +135,67 @@ pasta. Sao orfaos agora — o usuario pode apagar manualmente quando quiser.
 `uuid` removido do workspace (nao usado mais depois que `zip_path` parou de
 gerar nome aleatorio).
 
+## TUI com menu por jogo (sync/baixar/restaurar): RESOLVIDO (2026-07-04)
+
+Usuario pediu: na TUI, poder escolher um jogo (linha) e um menu com acoes:
+baixar da nuvem (so local, sem restaurar), backup manual, restaurar no jogo
+(do local), baixar da nuvem + restaurar, upload pra nuvem. Perguntei 3 coisas
+antes de implementar (todas resolvidas com a opcao recomendada):
+1. "Backup manual" e "upload pra nuvem" sao a mesma operacao hoje (zip local
+   + upload sao acoplados) — usuario topou manter uma so acao pras duas.
+2. Acoes de nuvem usam o `cloud_provider` ativo do config.toml (sem menu de
+   escolher Drive vs Box).
+3. So pergunta qual pasta de save se o jogo tiver mais de uma (senao roda
+   direto).
+
+**Refatoracao:** extraido `crates/playsync-cli/src/actions.rs` (novo) com a
+logica sem I/O de terminal (antes vivia dentro do `restore()` do `main.rs`,
+misturada com `println!`/stdin): `RestoreSource`/`parse_source`/
+`parse_provider`, `sanitized_and_file_name`, `fetch_backup_bytes` (local ou
+`CloudBackend::download`), `pull_from_cloud` (baixa e SO guarda local, novo —
+antes so existia "baixar e restaurar"), `extract_over` (apaga + `unzip_to`).
+`main.rs::restore()` (comando CLI) virou um wrapper fino sobre isso.
+
+**TUI (`tui.rs`) reescrita** com maquina de estado (`Mode`): `Table` (com
+`selected: usize`, navegacao ↑↓/j/k) → `Enter` abre `ActionMenu` (4 opcoes:
+Sincronizar agora, Baixar da nuvem, Restaurar no jogo, Baixar da nuvem e
+restaurar) → se o jogo tiver >1 pasta de save, `PathChoice` lista as opcoes
+→ acoes destrutivas (as duas de "restaurar") passam por `Confirm` (`[y]`
+executa, qualquer outra tecla cancela) → `Info` mostra o resultado (ou erro)
+e qualquer tecla volta pra `Table`. Popups desenhados com `Clear` + `List`/
+`Paragraph` centralizados (`centered_rect`, recipe padrao do ratatui).
+Transicao pra `Info` sempre reconsulta `Status` + `discover_games()`, entao
+o resultado ja aparece atualizado.
+
+**Como testei uma TUI interativa sem terminal de verdade:** sem `tmux`/
+`screen` instalados (e sem sudo interativo pra instalar), usei o modulo
+`pty` do Python (`os.fork()` + `pty.openpty()` + `TIOCSWINSZ`) pra rodar o
+`playsync` real anexado a um pseudo-terminal, mandar sequencias de teclado
+(setas via `\x1b[A`/`\x1b[B`, Enter, Esc, `y`, `q`) e capturar a tela
+(stripando ANSI com regex) entre cada tecla. Script descartado no fim
+(`/tmp/.../scratchpad/drive_tui.py`), so pra validacao, nao faz parte do
+repo.
+
+**Validado ao vivo, as 4 acoes, via essa automacao real da TUI** (jogo "The
+Surge 2", appid 644830, 3 pastas de save):
+- Navegacao ↑↓ move a linha selecionada (confirmado visualmente no capture).
+- `Enter` abre o menu com o titulo do jogo certo; ↑↓ move o cursor do menu.
+- "Restaurar no jogo" com >1 pasta → `PathChoice` lista as 3; `Esc` cancela
+  e volta pra tabela.
+- "Baixar da nuvem" (path 0, antes apagado de proposito pra forcar um
+  download de verdade) → baixou do Google Drive e recriou
+  `~/PlaySync/The Surge 2/save-0.zip` (confirmado no disco, zip valido).
+- "Restaurar no jogo" (path 0, local) → popup de confirmacao aparece, `y`
+  confirma, mensagem "Restaurado (backup local) em .../Roaming", hash
+  identico antes/depois (pasta era vazia dos dois lados, restauracao
+  correta de um save vazio).
+- "Sincronizar agora" (por linha, nao "tudo") → dispara na hora (mesmo fix
+  do `SyncNow` em background da secao acima), linha mostra
+  "sincronizando..." ao vivo.
+- "Baixar da nuvem e restaurar no jogo" (path 1, Local) → popup de
+  confirmacao, `y`, mensagem "Restaurado (nuvem) em .../Local", hash
+  identico antes/depois.
+
 ## TUI travando no `[s]` (sync tudo) + "Steam" listado como jogo: RESOLVIDO (2026-07-04)
 
 Usuario reportou: apertar `[s]` na TUI pra sincronizar tudo "trava" — e

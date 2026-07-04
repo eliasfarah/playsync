@@ -163,6 +163,14 @@ most recently).
 
 ### Usage
 
+Running `playsync` with no arguments opens an interactive TUI: navigate the
+game list with `↑↓`, press `Enter` on a game for a per-game action menu
+(sync now, download from cloud only, restore from local, or download +
+restore), `s` to sync everything, `r` to refresh, `q` to quit. Destructive
+actions (restoring over the live save) ask for confirmation first.
+
+Everything is also available non-interactively:
+
 ```bash
 playsync status              # table: game, last backup, sync status
 playsync sync                # force-sync all eligible games now
@@ -395,6 +403,14 @@ correspondente a `pkgver`.)
 Só um provedor fica ativo por vez (o último `cloud connect` bem-sucedido).
 
 ### Uso
+
+Rodar `playsync` sem argumentos abre uma TUI interativa: navega na lista de
+jogos com `↑↓`, aperta `Enter` num jogo pra abrir um menu de acoes (sincronizar
+agora, baixar da nuvem so pra local, restaurar do local, ou baixar da nuvem e
+restaurar), `s` sincroniza tudo, `r` atualiza, `q` sai. Acoes destrutivas
+(restaurar por cima do save atual) pedem confirmacao antes.
+
+Tudo tambem esta disponivel sem interatividade:
 
 ```bash
 playsync status              # tabela: jogo, ultimo backup, status de sync

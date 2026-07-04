@@ -1,3 +1,4 @@
+mod actions;
 mod ipc_client;
 mod tui;
 
@@ -137,7 +138,7 @@ async fn print_history(limit: u32) -> Result<()> {
 }
 
 async fn cloud_connect(provider: &str) -> Result<()> {
-    match parse_provider(provider)? {
+    match actions::parse_provider(provider)? {
         CloudProvider::GoogleDrive => {
             playsync_core::cloud::gdrive::GoogleDriveBackend::new()
                 .connect()
@@ -154,7 +155,7 @@ async fn cloud_connect(provider: &str) -> Result<()> {
 /// So pra validar o pipeline OAuth2 + upload de ponta a ponta: sobe um zip
 /// vazio (gerado na hora, sem depender de nenhum save real) pro provedor.
 async fn cloud_test_upload(provider: &str) -> Result<()> {
-    let provider = parse_provider(provider)?;
+    let provider = actions::parse_provider(provider)?;
     let backend = playsync_core::cloud::backend_for(provider);
 
     if !backend.is_connected() {
@@ -176,32 +177,12 @@ async fn cloud_test_upload(provider: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_provider(provider: &str) -> Result<CloudProvider> {
-    match provider {
-        "google-drive" | "gdrive" => Ok(CloudProvider::GoogleDrive),
-        "box" => Ok(CloudProvider::Box),
-        other => bail!("provedor desconhecido: {other} (use `google-drive` ou `box`)"),
-    }
-}
-
-enum RestoreSource {
-    Local,
-    Cloud(CloudProvider),
-}
-
-fn parse_source(source: &str) -> Result<RestoreSource> {
-    match source {
-        "local" => Ok(RestoreSource::Local),
-        other => Ok(RestoreSource::Cloud(parse_provider(other)?)),
-    }
-}
-
 /// Restaura o backup de um `save_path` do jogo (local ou de um provedor de
 /// nuvem) por cima da pasta/arquivo de save atual. Fala diretamente com
 /// `playsync-core` (Steam, config, backend de nuvem) em vez de passar pelo
 /// daemon — mesmo padrao de `cloud connect`/`cloud test-upload`.
 async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool) -> Result<()> {
-    let source = parse_source(source)?;
+    let source = actions::parse_source(source)?;
 
     let games = playsync_core::steam::discover_games().context("falha ao listar jogos da Steam")?;
     let game = games
@@ -240,35 +221,8 @@ async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool
         })?
         .clone();
 
-    let sanitized = playsync_core::naming::sanitize(&game.name);
-    let file_name = if game.save_paths.len() > 1 {
-        format!("save-{idx}.zip")
-    } else {
-        "save.zip".to_string()
-    };
-
-    let (source_label, bytes) = match &source {
-        RestoreSource::Local => {
-            let config = playsync_core::config::Config::load_or_default()?;
-            let path = config.local_backup_root()?.join(&sanitized).join(&file_name);
-            let bytes = tokio::fs::read(&path)
-                .await
-                .with_context(|| format!("nao encontrei backup local em {}", path.display()))?;
-            ("local".to_string(), bytes)
-        }
-        RestoreSource::Cloud(provider) => {
-            let backend = playsync_core::cloud::backend_for(*provider);
-            if !backend.is_connected() {
-                bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
-            }
-            let remote_path = format!("PlaySync/{sanitized}/{file_name}");
-            let bytes = backend
-                .download(&remote_path)
-                .await
-                .with_context(|| format!("nao consegui baixar {remote_path}"))?;
-            (format!("{provider:?}"), bytes)
-        }
-    };
+    let (sanitized, file_name) = actions::sanitized_and_file_name(&game, idx);
+    let (source_label, bytes) = actions::fetch_backup_bytes(&source, &sanitized, &file_name).await?;
 
     println!(
         "Restaurar \"{}\" ({file_name}, backup {source_label}) vai APAGAR e sobrescrever:\n  {}",
@@ -286,16 +240,7 @@ async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool
         }
     }
 
-    if target.is_dir() {
-        std::fs::remove_dir_all(&target)
-            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
-    } else if target.exists() {
-        std::fs::remove_file(&target)
-            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
-    }
-
-    let anchor = target.parent().unwrap_or(&target);
-    playsync_core::archive::unzip_to(&bytes, anchor).context("falha ao extrair o backup")?;
+    actions::extract_over(&bytes, &target)?;
 
     println!("Restaurado com sucesso: {}", target.display());
     Ok(())
