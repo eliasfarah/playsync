@@ -191,10 +191,16 @@ closing and syncs on its own after a debounce (5s by default, configurable).
 # a game with more than one save folder lists them (with an index) instead of restoring:
 playsync restore --app-id ID --source local
 
-# restore a specific one, from local or from a cloud provider:
+# restore the most recent backup, from local or from a cloud provider:
 playsync restore --app-id ID --source local --path-index 0
 playsync restore --app-id ID --source google-drive --path-index 0
 playsync restore --app-id ID --source box --path-index 0
+
+# see the available versions for a save path (oldest first, most recent last):
+playsync restore --app-id ID --source local --path-index 0 --list-versions
+
+# restore a specific one instead of the most recent (exact name from --list-versions):
+playsync restore --app-id ID --source local --path-index 0 --version save-20260704T192014Z.zip
 
 # skip the confirmation prompt (e.g. scripting):
 playsync restore --app-id ID --source local --path-index 0 --yes
@@ -204,20 +210,25 @@ Restoring **overwrites the live save folder** with the backup's contents
 (the existing folder/file is removed first, then the backup is extracted in
 its place) — you'll be asked to confirm unless `--yes` is passed.
 
-> Only one copy is kept per save path: locally the zip is overwritten on
-> every sync, and in the cloud the same file is updated in place rather than
-> piling up duplicates. There's no "restore from 3 backups ago" yet — restore
-> always gets you the most recent backup for the chosen source.
+> Every sync writes a new timestamped file instead of overwriting the same
+> one, both locally and in the cloud — a bad automatic sync (e.g. the game
+> was launched without a save and created a fresh/empty one, then closing it
+> synced *that*) can't destroy the only good backup you had. Only the most
+> recent `backup_versions_to_keep` (5 by default) are kept; older ones are
+> pruned automatically. If the live save folder is gone entirely (deleted,
+> corrupted), `restore` falls back to the path recorded in backup history
+> instead of refusing to run.
 
 #### Optional configuration
 
 `~/.config/playsync/config.toml`:
 
 ```toml
-cloud_provider = "google-drive"   # or "box" — set by `cloud connect`
-ignored_app_ids = [12345]         # AppIDs to never sync
-sync_debounce_secs = 5            # wait after the game closes before syncing
-local_backup_dir = "/custom/path" # default: ~/PlaySync
+cloud_provider = "google-drive"    # or "box" — set by `cloud connect`
+ignored_app_ids = [12345]          # AppIDs to never sync
+sync_debounce_secs = 5             # wait after the game closes before syncing
+local_backup_dir = "/custom/path"  # default: ~/PlaySync
+backup_versions_to_keep = 5        # how many timestamped backups to keep per save path
 ```
 
 ### Uninstalling
@@ -433,10 +444,16 @@ padrão, configurável).
 # um jogo com mais de uma pasta de save lista as opcoes (com indice) em vez de restaurar:
 playsync restore --app-id ID --source local
 
-# restaura uma especifica, do local ou de um provedor de nuvem:
+# restaura o backup mais recente, do local ou de um provedor de nuvem:
 playsync restore --app-id ID --source local --path-index 0
 playsync restore --app-id ID --source google-drive --path-index 0
 playsync restore --app-id ID --source box --path-index 0
+
+# ve as versoes disponiveis pra uma pasta de save (mais antiga primeiro, mais recente por ultimo):
+playsync restore --app-id ID --source local --path-index 0 --list-versions
+
+# restaura uma especifica em vez da mais recente (nome exato de --list-versions):
+playsync restore --app-id ID --source local --path-index 0 --version save-20260704T192014Z.zip
 
 # pula a confirmacao (ex: uso em script):
 playsync restore --app-id ID --source local --path-index 0 --yes
@@ -446,20 +463,24 @@ Restaurar **sobrescreve a pasta de save atual** com o conteudo do backup (a
 pasta/arquivo existente e apagado primeiro, depois o backup e extraido no
 lugar) — voce vai ser perguntado antes, a menos que passe `--yes`.
 
-> So uma copia e mantida por pasta de save: localmente o zip e sobrescrito a
-> cada sync, e na nuvem o mesmo arquivo e atualizado no lugar em vez de
-> acumular duplicatas. Ainda nao existe "restaurar de 3 backups atras" —
-> restaurar sempre pega o backup mais recente da origem escolhida.
+> Cada sync grava um arquivo novo com timestamp em vez de sobrescrever
+> sempre o mesmo, local e na nuvem — um sync automatico ruim (ex: o jogo foi
+> aberto sem save e criou um novo/vazio, o fechamento sincronizou isso) nao
+> destroi o unico backup bom que existia. So as `backup_versions_to_keep`
+> mais recentes (5 por padrao) sao mantidas; as mais antigas sao podadas
+> sozinhas. Se a pasta de save ao vivo sumiu de vez (apagada, corrompida),
+> `restore` cai pro caminho gravado no historico em vez de simplesmente recusar.
 
 #### Configuração opcional
 
 `~/.config/playsync/config.toml`:
 
 ```toml
-cloud_provider = "google-drive"   # ou "box" — setado por `cloud connect`
-ignored_app_ids = [12345]         # AppIDs pra nunca sincronizar
-sync_debounce_secs = 5            # espera apos fechar o jogo antes de sincronizar
-local_backup_dir = "/caminho/custom"  # padrao: ~/PlaySync
+cloud_provider = "google-drive"        # ou "box" — setado por `cloud connect`
+ignored_app_ids = [12345]              # AppIDs pra nunca sincronizar
+sync_debounce_secs = 5                 # espera apos fechar o jogo antes de sincronizar
+local_backup_dir = "/caminho/custom"   # padrao: ~/PlaySync
+backup_versions_to_keep = 5            # quantos backups com timestamp manter por pasta de save
 ```
 
 ### Desinstalação

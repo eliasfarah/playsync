@@ -49,6 +49,14 @@ enum Command {
         /// Pula a confirmacao antes de sobrescrever o save atual.
         #[arg(long, default_value_t = false)]
         yes: bool,
+        /// So lista as versoes de backup disponiveis (mais recentes por
+        /// ultimo) pra esse jogo/pasta/origem, sem restaurar nada.
+        #[arg(long, default_value_t = false)]
+        list_versions: bool,
+        /// Restaura uma versao especifica (nome exato mostrado por
+        /// `--list-versions`) em vez da mais recente.
+        #[arg(long)]
+        version: Option<String>,
     },
 }
 
@@ -88,8 +96,8 @@ async fn main() -> Result<()> {
             CloudCommand::Connect { provider } => cloud_connect(&provider).await,
             CloudCommand::TestUpload { provider } => cloud_test_upload(&provider).await,
         },
-        Some(Command::Restore { app_id, source, path_index, yes }) => {
-            restore(app_id, &source, path_index, yes).await
+        Some(Command::Restore { app_id, source, path_index, yes, list_versions, version }) => {
+            restore(app_id, &source, path_index, yes, list_versions, version.as_deref()).await
         }
     }
 }
@@ -197,7 +205,14 @@ async fn cloud_test_upload(provider: &str) -> Result<()> {
 /// nuvem) por cima da pasta/arquivo de save atual. Fala diretamente com
 /// `playsync-core` (Steam, config, backend de nuvem) em vez de passar pelo
 /// daemon — mesmo padrao de `cloud connect`/`cloud test-upload`.
-async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool) -> Result<()> {
+async fn restore(
+    app_id: u32,
+    source: &str,
+    path_index: Option<usize>,
+    yes: bool,
+    list_versions: bool,
+    version: Option<&str>,
+) -> Result<()> {
     let source = actions::parse_source(source)?;
 
     let games = playsync_core::steam::discover_games().context("falha ao listar jogos da Steam")?;
@@ -246,7 +261,22 @@ async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool
         })?
         .clone();
 
-    let (sanitized, file_name) = actions::sanitized_and_file_name(&game, idx, paths.len());
+    let sanitized = playsync_core::naming::sanitize(&game.name);
+    let versions = actions::list_versions(&source, &sanitized, idx, paths.len()).await?;
+
+    if list_versions {
+        if versions.is_empty() {
+            println!("nenhuma versao de backup encontrada pra \"{}\" nessa origem", game.name);
+        } else {
+            println!("versoes disponiveis pra \"{}\" (mais recente por ultimo):", game.name);
+            for name in &versions {
+                println!("  {name}");
+            }
+        }
+        return Ok(());
+    }
+
+    let file_name = actions::pick_version(&versions, version)?.to_string();
     let (source_label, bytes) = actions::fetch_backup_bytes(&source, &sanitized, &file_name).await?;
 
     println!(

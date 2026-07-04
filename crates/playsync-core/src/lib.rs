@@ -9,3 +9,4 @@ pub mod ipc;
 pub mod manifest;
 pub mod naming;
 pub mod steam;
+pub mod versions;

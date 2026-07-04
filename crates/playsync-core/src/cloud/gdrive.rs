@@ -265,6 +265,20 @@ impl GoogleDriveBackend {
 
         Ok((parent, file_name))
     }
+
+    /// Resolve `remote_dir` (todos os segmentos sao pastas) pro id da ultima,
+    /// sem criar nada. `None` se qualquer pasta no caminho nao existir ainda
+    /// (ex: primeiro backup desse jogo, a pasta nunca foi criada).
+    async fn resolve_folder_path(&self, access_token: &str, remote_dir: &str) -> Result<Option<String>> {
+        let mut parent = "root".to_string();
+        for folder_name in remote_dir.split('/').filter(|s| !s.is_empty()) {
+            match self.find_entry(access_token, folder_name, &parent, true).await? {
+                Some(id) => parent = id,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(parent))
+    }
 }
 
 impl Default for GoogleDriveBackend {
@@ -386,6 +400,80 @@ impl CloudBackend for GoogleDriveBackend {
             .await
             .context("falha ao ler o corpo da resposta do Google Drive")?
             .to_vec())
+    }
+
+    /// Lista os nomes dos arquivos (nao-pasta) dentro de `remote_dir`. Vazio
+    /// se a pasta ainda nao existir (nenhum backup desse jogo ainda).
+    async fn list_files(&self, remote_dir: &str) -> Result<Vec<String>> {
+        let access_token = self.access_token().await?;
+        let Some(parent) = self.resolve_folder_path(&access_token, remote_dir).await? else {
+            return Ok(Vec::new());
+        };
+
+        let query = format!("'{parent}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false");
+        let mut url = oauth2::url::Url::parse("https://www.googleapis.com/drive/v3/files")
+            .expect("URL estatica valida");
+        url.query_pairs_mut().append_pair("q", &query).append_pair("fields", "files(name)");
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .context("falha ao listar arquivos no Google Drive")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao listar \"{remote_dir}\": {text}");
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .await
+            .context("resposta do Google Drive nao veio no formato JSON esperado")?;
+        Ok(parsed["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["name"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    /// Apaga o arquivo em `remote_path`. Sem erro se o arquivo (ou alguma
+    /// pasta do caminho) ja nao existir — podar algo que ja sumiu nao e falha.
+    async fn delete(&self, remote_path: &str) -> Result<()> {
+        let access_token = self.access_token().await?;
+
+        let (remote_dir, file_name) = remote_path
+            .rsplit_once('/')
+            .context("remote_path sem \"/\" — esperado algo tipo \"PlaySync/<jogo>/<arquivo>\"")?;
+
+        let Some(parent) = self.resolve_folder_path(&access_token, remote_dir).await? else {
+            return Ok(());
+        };
+        let Some(file_id) = self.find_entry(&access_token, file_name, &parent, false).await? else {
+            return Ok(());
+        };
+
+        let response = self
+            .http
+            .delete(format!("https://www.googleapis.com/drive/v3/files/{file_id}"))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("falha ao apagar arquivo no Google Drive")?;
+
+        let status = response.status();
+        // 404 = ja nao existe (ex: id obtido de uma listagem que ficou
+        // desatualizada, ou duplicata do Drive ja removida por outra
+        // chamada) — podar algo que ja sumiu nao e falha.
+        if !status.is_success() && status.as_u16() != 404 {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao apagar \"{remote_path}\": {text}");
+        }
+        Ok(())
     }
 
     fn is_connected(&self) -> bool {

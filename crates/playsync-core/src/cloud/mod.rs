@@ -26,6 +26,16 @@ pub trait CloudBackend: Send + Sync {
     /// Erra se o arquivo ou alguma pasta do caminho nao existir.
     async fn download(&self, remote_path: &str) -> Result<Vec<u8>>;
 
+    /// Nomes de arquivo dentro de `remote_dir` (ex: `PlaySync/<jogo>`, sem
+    /// barra final) — usado pra decidir quais versoes antigas podar depois
+    /// de um upload novo (ver modulo `versions`). Devolve vazio (nao erro)
+    /// se a pasta ainda nao existir.
+    async fn list_files(&self, remote_dir: &str) -> Result<Vec<String>>;
+
+    /// Apaga o arquivo em `remote_path` (mesmo formato usado por upload/
+    /// download). Usado pra podar versoes antigas.
+    async fn delete(&self, remote_path: &str) -> Result<()>;
+
     /// Verifica se ha um token valido salvo (i.e. `cloud connect` ja foi rodado).
     fn is_connected(&self) -> bool;
 }

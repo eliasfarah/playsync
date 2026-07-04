@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use playsync_core::ipc::CloudProvider;
-use playsync_core::steam::GameSave;
 
 pub enum RestoreSource {
     Local,
@@ -52,20 +51,72 @@ pub fn restore_candidate_paths(app_id: u32, live_paths: &[std::path::PathBuf]) -
     (fallback, used_history)
 }
 
-/// Nome sanitizado da pasta do jogo + nome do arquivo de zip pro `path_index`
-/// dado — a mesma formula usada por `playsyncd::sync` pra decidir onde cada
-/// save_path fica dentro de `PlaySync/<jogo>/`. `paths_len` e a quantidade de
-/// save_paths *usada no backup que estamos restaurando* — pode vir do
-/// historico (ver `restore_candidate_paths`), nao necessariamente de
-/// `game.save_paths` ao vivo, entao nao e so `game.save_paths.len()`.
-pub fn sanitized_and_file_name(game: &GameSave, path_index: usize, paths_len: usize) -> (String, String) {
-    let sanitized = playsync_core::naming::sanitize(&game.name);
-    let file_name = if paths_len > 1 {
-        format!("save-{path_index}.zip")
-    } else {
-        "save.zip".to_string()
+/// Versoes existentes (nomes de arquivo, ordenadas da mais antiga pra mais
+/// nova — ver modulo `versions`) do save_path `path_index`, local ou num
+/// provedor de nuvem. `paths_len` e a quantidade de save_paths *usada no
+/// backup que estamos restaurando*, que pode vir do historico (ver
+/// `restore_candidate_paths`) e por isso nao e so `game.save_paths.len()`.
+/// Vazio (nao erro) se esse jogo/path_index nunca foi sincronizado por esse
+/// `source`.
+pub async fn list_versions(
+    source: &RestoreSource,
+    sanitized: &str,
+    path_index: usize,
+    paths_len: usize,
+) -> Result<Vec<String>> {
+    let prefix = playsync_core::versions::file_prefix(path_index, paths_len);
+    let names = match source {
+        RestoreSource::Local => {
+            let config = playsync_core::config::Config::load_or_default()?;
+            let dir = config.local_backup_root()?.join(sanitized);
+            match std::fs::read_dir(&dir) {
+                Ok(entries) => entries.flatten().filter_map(|e| e.file_name().into_string().ok()).collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+        RestoreSource::Cloud(provider) => {
+            let backend = playsync_core::cloud::backend_for(*provider);
+            if !backend.is_connected() {
+                bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
+            }
+            backend.list_files(&format!("PlaySync/{sanitized}")).await?
+        }
     };
-    (sanitized, file_name)
+    Ok(playsync_core::versions::sort_versions(names, &prefix))
+}
+
+/// Escolhe qual versao usar: `explicit` (nome exato, de `--version` ou do
+/// menu da TUI) se informado, senao a mais recente. `versions` deve vir
+/// ordenada da mais antiga pra mais nova (`list_versions`).
+pub fn pick_version<'a>(versions: &'a [String], explicit: Option<&str>) -> Result<&'a str> {
+    match explicit {
+        Some(name) => versions
+            .iter()
+            .find(|v| v.as_str() == name)
+            .map(String::as_str)
+            .with_context(|| format!("versao \"{name}\" nao encontrada (use --list-versions pra ver as disponiveis)")),
+        None => versions
+            .last()
+            .map(String::as_str)
+            .context("nenhum backup encontrado pra esse jogo/pasta/origem"),
+    }
+}
+
+/// Atalho pra "quero a versao mais recente, sem oferecer escolha" (usado
+/// pelo menu da TUI, que nao tem UI pra listar/escolher versao ainda —
+/// `playsync restore --list-versions`/`--version` na CLI cobre esse caso).
+/// Devolve o rotulo da origem, o nome do arquivo escolhido (pra quem precisa
+/// exibir/persistir) e os bytes baixados.
+pub async fn fetch_latest_backup_bytes(
+    source: &RestoreSource,
+    sanitized: &str,
+    path_index: usize,
+    paths_len: usize,
+) -> Result<(String, String, Vec<u8>)> {
+    let versions = list_versions(source, sanitized, path_index, paths_len).await?;
+    let file_name = pick_version(&versions, None)?.to_string();
+    let (label, bytes) = fetch_backup_bytes(source, sanitized, &file_name).await?;
+    Ok((label, file_name, bytes))
 }
 
 /// Le os bytes do backup de `PlaySync/<sanitized>/<file_name>`, local ou de
@@ -98,36 +149,6 @@ pub async fn fetch_backup_bytes(
             Ok((format!("{provider:?}"), bytes))
         }
     }
-}
-
-/// Baixa o backup de `provider` e so guarda em `local_dest` — nao mexe na
-/// pasta de save do jogo. Serve pra trazer de volta pro disco local um
-/// backup que so existia na nuvem (ex: apos trocar de maquina), sem
-/// restaurar de imediato.
-pub async fn pull_from_cloud(
-    provider: CloudProvider,
-    sanitized: &str,
-    file_name: &str,
-    local_dest: &Path,
-) -> Result<()> {
-    let backend = playsync_core::cloud::backend_for(provider);
-    if !backend.is_connected() {
-        bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
-    }
-    let remote_path = format!("PlaySync/{sanitized}/{file_name}");
-    let bytes = backend
-        .download(&remote_path)
-        .await
-        .with_context(|| format!("nao consegui baixar {remote_path}"))?;
-
-    if let Some(parent) = local_dest.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("nao consegui criar {}", parent.display()))?;
-    }
-    tokio::fs::write(local_dest, bytes)
-        .await
-        .with_context(|| format!("nao consegui escrever {}", local_dest.display()))
 }
 
 /// Apaga `target` (arquivo ou diretorio, se existir) e extrai `bytes` no

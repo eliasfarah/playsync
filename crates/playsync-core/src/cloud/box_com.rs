@@ -263,6 +263,59 @@ impl BoxBackend {
 
         Ok((parent, file_name))
     }
+
+    /// Resolve `remote_dir` (todos os segmentos sao pastas) pro id da
+    /// ultima, sem criar nada. `None` se alguma pasta no caminho nao existir
+    /// ainda (ex: primeiro backup desse jogo).
+    async fn resolve_folder_path(&self, access_token: &str, remote_dir: &str) -> Result<Option<String>> {
+        let mut parent = "0".to_string();
+        for folder_name in remote_dir.split('/').filter(|s| !s.is_empty()) {
+            match self.find_folder(access_token, folder_name, &parent).await? {
+                Some(id) => parent = id,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(parent))
+    }
+
+    /// Nomes de todos os itens do tipo `entry_type` ("file" ou "folder")
+    /// dentro de `parent_id` — mesma chamada de listagem que `find_entry`
+    /// usa, so que devolvendo todos os nomes em vez de procurar um so.
+    async fn list_entries(&self, access_token: &str, parent_id: &str, entry_type: &str) -> Result<Vec<String>> {
+        let mut url = oauth2::url::Url::parse(&format!(
+            "https://api.box.com/2.0/folders/{parent_id}/items"
+        ))
+        .expect("URL valida");
+        url.query_pairs_mut()
+            .append_pair("fields", "id,name,type")
+            .append_pair("limit", "1000");
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("falha ao listar pasta no Box")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Box respondeu {status} ao listar pasta (id={parent_id}): {text}");
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .await
+            .context("resposta do Box nao veio no formato JSON esperado")?;
+        Ok(parsed["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry["type"] == entry_type)
+            .filter_map(|entry| entry["name"].as_str().map(str::to_string))
+            .collect())
+    }
 }
 
 impl Default for BoxBackend {
@@ -414,6 +467,48 @@ impl CloudBackend for BoxBackend {
             .await
             .context("falha ao ler o corpo da resposta do Box")?
             .to_vec())
+    }
+
+    /// Lista os nomes dos arquivos dentro de `remote_dir`. Vazio se a pasta
+    /// ainda nao existir (nenhum backup desse jogo ainda).
+    async fn list_files(&self, remote_dir: &str) -> Result<Vec<String>> {
+        let access_token = self.access_token().await?;
+        let Some(parent) = self.resolve_folder_path(&access_token, remote_dir).await? else {
+            return Ok(Vec::new());
+        };
+        self.list_entries(&access_token, &parent, "file").await
+    }
+
+    /// Apaga o arquivo em `remote_path`. Sem erro se o arquivo (ou alguma
+    /// pasta do caminho) ja nao existir — podar algo que ja sumiu nao e falha.
+    async fn delete(&self, remote_path: &str) -> Result<()> {
+        let access_token = self.access_token().await?;
+
+        let (remote_dir, file_name) = remote_path
+            .rsplit_once('/')
+            .context("remote_path sem \"/\" — esperado algo tipo \"PlaySync/<jogo>/<arquivo>\"")?;
+
+        let Some(parent) = self.resolve_folder_path(&access_token, remote_dir).await? else {
+            return Ok(());
+        };
+        let Some(file_id) = self.find_entry(&access_token, file_name, &parent, "file").await? else {
+            return Ok(());
+        };
+
+        let response = self
+            .http
+            .delete(format!("https://api.box.com/2.0/files/{file_id}"))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("falha ao apagar arquivo no Box")?;
+
+        let status = response.status();
+        if !status.is_success() && status.as_u16() != 404 {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Box respondeu {status} ao apagar \"{remote_path}\": {text}");
+        }
+        Ok(())
     }
 
     fn is_connected(&self) -> bool {

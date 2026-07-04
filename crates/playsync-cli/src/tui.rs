@@ -259,7 +259,9 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
     let Some(target) = paths.get(path_index) else {
         return format!("indice de save invalido ({path_index})");
     };
-    let (sanitized, file_name) = actions::sanitized_and_file_name(game, path_index, paths.len());
+    let target = target.clone();
+    let sanitized = playsync_core::naming::sanitize(&game.name);
+    let paths_len = paths.len();
     let warning = if used_history {
         "aviso: pasta de save atual nao encontrada no disco, usando o caminho do ultimo backup — "
     } else {
@@ -271,25 +273,36 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
             GameAction::SyncNow => unreachable!("SyncNow nao usa path_index"),
             GameAction::PullFromCloud => {
                 let provider = active_cloud_provider()?;
+                let source = RestoreSource::Cloud(provider);
+                let (_, file_name, bytes) =
+                    actions::fetch_latest_backup_bytes(&source, &sanitized, path_index, paths_len).await?;
                 let local_dest = playsync_core::config::Config::load_or_default()?
                     .local_backup_root()?
                     .join(&sanitized)
                     .join(&file_name);
-                actions::pull_from_cloud(provider, &sanitized, &file_name, &local_dest).await?;
+                if let Some(parent) = local_dest.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(&local_dest, bytes).await?;
                 Ok(format!("Baixado da nuvem para {}", local_dest.display()))
             }
             GameAction::RestoreLocal => {
-                let (_, bytes) =
-                    actions::fetch_backup_bytes(&RestoreSource::Local, &sanitized, &file_name).await?;
-                actions::extract_over(&bytes, target)?;
+                let (_, _, bytes) =
+                    actions::fetch_latest_backup_bytes(&RestoreSource::Local, &sanitized, path_index, paths_len)
+                        .await?;
+                actions::extract_over(&bytes, &target)?;
                 Ok(format!("Restaurado (backup local) em {}", target.display()))
             }
             GameAction::RestoreFromCloud => {
                 let provider = active_cloud_provider()?;
-                let (_, bytes) =
-                    actions::fetch_backup_bytes(&RestoreSource::Cloud(provider), &sanitized, &file_name)
-                        .await?;
-                actions::extract_over(&bytes, target)?;
+                let (_, _, bytes) = actions::fetch_latest_backup_bytes(
+                    &RestoreSource::Cloud(provider),
+                    &sanitized,
+                    path_index,
+                    paths_len,
+                )
+                .await?;
+                actions::extract_over(&bytes, &target)?;
                 Ok(format!("Restaurado (nuvem) em {}", target.display()))
             }
         }

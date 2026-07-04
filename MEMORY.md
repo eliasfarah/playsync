@@ -1,5 +1,94 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Versionamento de backups (protege contra sync automatico ruim): RESOLVIDO (2026-07-04)
+
+Depois do teste real de apagar+restaurar (secao acima), o usuario reproduziu
+o mesmo teste na mao seguindo o passo a passo que dei — e "nao funcionou".
+Investigando (`journalctl --user -u playsyncd.service`): ele abriu o jogo de
+verdade durante o teste (o save real tinha acabado de ser apagado), o jogo
+criou um save novo/vazio, e ao FECHAR o jogo o daemon disparou o sync
+automatico de sempre — sobrescrevendo o backup bom (local E Google Drive)
+com o save vazio. Confirmado via `playsync history` (timestamps do sync
+automatico logo apos o daemon detectar "jogo iniciado"/"jogo fechado" duas
+vezes) e comparando hash do arquivo restaurado com o esperado (diferente,
+mesmo tamanho — DS2 usa um formato de slot fixo, entao nem um heuristico de
+"tamanho mudou" pegaria isso). Sem risco real: eu tinha 2 copias de
+seguranca independentes (a minha do teste anterior + a que o usuario fez
+seguindo o passo 1 do guia) — recuperado na hora, sha256 conferido.
+
+Pergunta do usuario: "como podemos evitar que isso aconteça?" Resposta
+(perguntei o formato antes de codar, usuario confirmou a opcao
+recomendada): **versionamento** — manter as ultimas N copias (local e
+nuvem) em vez de sempre sobrescrever a mesma, pra um sync automatico ruim
+nunca destruir a unica copia boa que existia.
+
+**`playsync-core/src/versions.rs` (novo):** nomenclatura e retencao.
+`version_file_name(path_index, total_paths, timestamp)` gera
+`save-<timestamp>.zip` (1 save_path) ou `save-{idx}-<timestamp>.zip` (>1),
+timestamp em `%Y%m%dT%H%M%SZ` (ordena lexicograficamente = cronologicamente,
+sem precisar parsear na hora de listar). `sort_versions`/`names_to_prune`
+filtram por prefixo e decidem o que podar (tudo exceto as `keep` mais
+recentes). Arquivos da nomenclatura ANTIGA (`save.zip`/`save-{idx}.zip`, sem
+timestamp, de antes dessa sessao) nao sao reconhecidos como versao por esse
+modulo — ficam no disco/nuvem sem serem listados nem podados (achado
+"lixo" real: um `save-2.zip` de uma sessao anterior, de quando DS2 ainda
+tinha 3 save_paths pela heuristica antiga — ver bug do 404 abaixo).
+
+**`Config` ganhou `backup_versions_to_keep: usize`** (default 5,
+`config.toml`). **`playsyncd/sync.rs::sync_one`**: cada save_path agora
+grava um arquivo novo com timestamp (local E upload), depois poda local
+(`std::fs::read_dir` + `versions::names_to_prune`) e na nuvem (novo).
+
+**`CloudBackend` ganhou `list_files(remote_dir)` e `delete(remote_path)`**
+(implementados nos dois backends): Drive lista via query
+`'<parent>' in parents and mimeType != folder`, resolve pasta sem criar
+nada (`resolve_folder_path`, devolve `None` se ainda nao existir — 1o
+backup desse jogo); Box reusa a mesma chamada de listagem de pasta que
+`find_entry` ja fazia, so devolvendo todos os nomes em vez de procurar um.
+
+**Bug achado e corrigido durante a validacao ao vivo:** rodei 7 syncs
+seguidos pra forcar poda de verdade — `journalctl` mostrou 2x "falha ao
+podar versao antiga na nuvem", ambas 404 do Drive ao tentar apagar um id
+que ja nao existia (`save-2.zip`, resto de uma sessao anterior desta MESMA
+conversa, de antes do fix do manifest, quando DS2 tinha 3 save_paths pela
+heuristica — casualmente tambem comeca com o prefixo `"save-"` usado agora
+pro caso de 1 save_path so, entao a poda tentou limpar ele tambem, o que e
+o comportamento correto; so faltava tolerar o 404). Box ja tratava 404 como
+"ja foi, tudo bem" desde a implementacao original; Drive nao — corrigido
+adicionando a mesma tolerancia (`status.as_u16() != 404`).
+
+**Validado ao vivo, de ponta a ponta** (rebuild release, reinstalado,
+daemon reiniciado): 7 syncs seguidos do DARK SOULS II confirmaram poda
+mantendo exatamente as 5 versoes mais recentes (local E Google Drive
+batendo exatamente, mesmos 5 nomes nos dois lados via
+`playsync restore --list-versions`). Depois, **reproduzi o cenario exato
+do bug relatado pelo usuario de proposito**: substitui o save real por
+bytes aleatorios (mesmo tamanho, simulando o "save vazio/novo"), rodei
+`playsync sync`, confirmei que a versao mais nova ficou com o hash "ruim" —
+mas a versao anterior (boa) continuou disponivel em
+`--list-versions`. Restaurei especificamente ELA
+(`playsync restore --app-id 335300 --source local --version
+save-20260704T192014Z.zip --yes`) e o sha256 bateu exatamente com o save
+bom original. Rodei mais um sync depois (com o save ja bom de novo) pra
+deixar a versao mais recente = a boa, `playsync status` voltou pra
+"em dia". Sem nenhum momento de risco real pro progresso do usuario.
+
+**CLI:** `playsync restore ... --list-versions` (lista as versoes
+disponiveis, mais recente por ultimo, sem restaurar nada) e `--version
+<nome-exato>` (restaura uma especifica em vez da mais recente). TUI
+continua so usando a mais recente (sem UI de escolher versao ainda — fica
+pra uma sessao futura se o usuario quiser).
+
+**Gap conhecido, nao resolvido:** duplicatas antigas no Drive (nomes
+repetidos, de sessoes anteriores a bugs ja corrigidos) podem fazer
+`find_entry`/`delete` resolver pro id errado entre chamadas (o Drive nao
+impede dois arquivos com o mesmo nome na mesma pasta, ao contrario de um
+filesystem de verdade) — ja documentado como "lixo conhecido, limpeza
+manual" em sessoes anteriores, nao like a piorar com o versionamento, so
+mencionando de novo porque foi o que gerou os 404 vistos na validacao.
+
+**Ainda nao commitado.**
+
 ## Teste real "apagar save de verdade + restaurar" achou bug critico: RESOLVIDO (2026-07-04)
 
 Usuario pediu o teste mais realista possivel: pegar um jogo de verdade

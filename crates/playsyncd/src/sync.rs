@@ -14,6 +14,7 @@ use playsync_core::db::HistoryDb;
 use playsync_core::ipc::{BackupEntry, CloudProvider, GameStatus, SyncStatus};
 use playsync_core::naming;
 use playsync_core::steam::{self, GameSave};
+use playsync_core::versions;
 use tokio::sync::Mutex;
 
 pub struct SyncEngine {
@@ -67,6 +68,7 @@ impl SyncEngine {
 
         let config = self.config.lock().await;
         let provider = config.cloud_provider.clone();
+        let versions_to_keep = config.backup_versions_to_keep;
         let local_root = match config.local_backup_root() {
             Ok(root) => root,
             Err(err) => {
@@ -79,7 +81,7 @@ impl SyncEngine {
         let backend = provider.as_deref().and_then(parse_provider).map(cloud::backend_for);
 
         for game in targets {
-            self.sync_one(&game, backend.as_deref(), &local_root).await;
+            self.sync_one(&game, backend.as_deref(), &local_root, versions_to_keep).await;
         }
     }
 
@@ -87,7 +89,13 @@ impl SyncEngine {
     /// local, sempre) e, se houver um provedor conectado, sobe o mesmo zip
     /// pra `PlaySync/<jogo>/` la tambem — a mesma estrutura de pastas dos
     /// dois lados, so que uma e local e a outra e na nuvem.
-    async fn sync_one(&self, game: &GameSave, backend: Option<&dyn CloudBackend>, local_root: &Path) {
+    async fn sync_one(
+        &self,
+        game: &GameSave,
+        backend: Option<&dyn CloudBackend>,
+        local_root: &Path,
+        versions_to_keep: usize,
+    ) {
         if game.save_paths.is_empty() {
             tracing::debug!(app_id = game.app_id, "nenhuma pasta de save conhecida, ignorando");
             return;
@@ -99,16 +107,20 @@ impl SyncEngine {
         self.mark_running(game.app_id).await;
 
         let sanitized_name = naming::sanitize(&game.name);
-        let multiple = game.save_paths.len() > 1;
+        let total_paths = game.save_paths.len();
+        let game_dir = local_root.join(&sanitized_name);
+        let now = Utc::now();
         let mut last_err = None;
 
         for (idx, path) in game.save_paths.iter().enumerate() {
-            let file_name = if multiple {
-                format!("save-{idx}.zip")
-            } else {
-                "save.zip".to_string()
-            };
-            let local_dest = local_root.join(&sanitized_name).join(&file_name);
+            // Timestamp em vez de sempre sobrescrever o mesmo `save.zip`: um
+            // sync automatico ruim (ex: jogo aberto sem save, cria um save
+            // novo/vazio, o fechamento sincroniza isso) nao destroi a unica
+            // copia boa que existia — `versions::names_to_prune` limpa as
+            // mais antigas logo abaixo, mantendo so as `versions_to_keep` mais
+            // recentes.
+            let file_name = versions::version_file_name(idx, total_paths, now);
+            let local_dest = game_dir.join(&file_name);
 
             let zip_result = {
                 let path = path.clone();
@@ -132,6 +144,12 @@ impl SyncEngine {
                 if let Err(err) = backend.upload(&local_dest, &remote_path).await {
                     last_err = Some(err.to_string());
                 }
+            }
+
+            let prefix = versions::file_prefix(idx, total_paths);
+            prune_local_versions(&game_dir, &prefix, versions_to_keep);
+            if let Some(backend) = backend {
+                prune_cloud_versions(backend, &sanitized_name, &prefix, versions_to_keep).await;
             }
         }
 
@@ -201,5 +219,50 @@ fn parse_provider(s: &str) -> Option<CloudProvider> {
         "google-drive" | "google_drive" => Some(CloudProvider::GoogleDrive),
         "box" => Some(CloudProvider::Box),
         _ => None,
+    }
+}
+
+/// Apaga as versoes locais mais antigas de `prefix` em `game_dir`, mantendo
+/// so as `keep` mais recentes (ver modulo `versions`). Falha silenciosa por
+/// arquivo (loga e continua) — um erro ao apagar uma versao antiga nao deve
+/// derrubar o sync que acabou de dar certo.
+fn prune_local_versions(game_dir: &Path, prefix: &str, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(game_dir) else {
+        return;
+    };
+    let names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+
+    let sorted = versions::sort_versions(names, prefix);
+    for old_name in versions::names_to_prune(&sorted, keep) {
+        if let Err(err) = std::fs::remove_file(game_dir.join(old_name)) {
+            tracing::warn!(%err, old_name, "falha ao podar versao local antiga");
+        }
+    }
+}
+
+/// Mesma poda, na nuvem — lista o que ja esta em `PlaySync/<jogo>/` e apaga
+/// as versoes mais antigas alem de `keep`. So roda apos um upload bem
+/// sucedido; se listar ou apagar falhar (ex: rede), so loga — o backup novo
+/// ja subiu, nao vale a pena marcar a sincronizacao inteira como erro por
+/// causa da limpeza.
+async fn prune_cloud_versions(backend: &dyn CloudBackend, sanitized_name: &str, prefix: &str, keep: usize) {
+    let remote_dir = format!("PlaySync/{sanitized_name}");
+    let names = match backend.list_files(&remote_dir).await {
+        Ok(names) => names,
+        Err(err) => {
+            tracing::warn!(%err, remote_dir, "falha ao listar versoes na nuvem pra podar");
+            return;
+        }
+    };
+
+    let sorted = versions::sort_versions(names, prefix);
+    for old_name in versions::names_to_prune(&sorted, keep) {
+        let remote_path = format!("{remote_dir}/{old_name}");
+        if let Err(err) = backend.delete(&remote_path).await {
+            tracing::warn!(%err, remote_path, "falha ao podar versao antiga na nuvem");
+        }
     }
 }

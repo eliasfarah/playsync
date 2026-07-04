@@ -28,6 +28,12 @@ pub struct Config {
     /// costuma ter o caminho exato. Precisa ser o caminho absoluto de
     /// verdade no disco (dentro do prefixo Proton do jogo).
     pub extra_save_paths: HashMap<String, Vec<PathBuf>>,
+    /// Quantas versoes de cada save_path manter (local e na nuvem) antes de
+    /// podar as mais antigas. Existe pra um sync automatico ruim (ex: o jogo
+    /// aberto sem save cria um save novo/vazio, e o fechamento sincroniza
+    /// isso) nao destruir a unica copia boa que existia — com >1 versao,
+    /// `restore` ainda alcanca o que veio antes.
+    pub backup_versions_to_keep: usize,
 }
 
 impl Default for Config {
@@ -38,6 +44,7 @@ impl Default for Config {
             sync_debounce_secs: 5,
             local_backup_dir: None,
             extra_save_paths: HashMap::new(),
+            backup_versions_to_keep: 5,
         }
     }
 }
