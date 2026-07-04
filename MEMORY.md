@@ -150,12 +150,56 @@ sido empurrado ainda, reescrevemos os commits locais (`git filter-branch
 `api.github.com/users/eliasfarah`, publico). `git config user.email` deste
 repo ja fica configurado assim daqui pra frente.
 
-## Proxima tarefa em aberto
+## README + LICENSE + release v0.1.0: RESOLVIDO (2026-07-04)
 
-Empacotar (.deb/AUR): `packaging/aur/PKGBUILD` ja aponta pro repo real, mas
-`source=` espera uma tag `v0.1.0` publicada (`refs/tags/v0.1.0` +
-release/tarball no GitHub) que ainda nao existe — precisa decidir se cria a
-tag/release agora ou deixa pra quando o codigo estiver mais maduro.
+`README.md` (instalacao fonte/.deb/AUR, config Google Drive/Box, uso do CLI,
+desinstalacao) e `LICENSE` (MIT — Cargo.toml ja declarava mas o arquivo nao
+existia) adicionados. Ultimos placeholders `yourname` trocados pro repo real
+(`Cargo.toml` `repository=`, `packaging/systemd/playsyncd.service`
+`Documentation=`).
+
+`gh` CLI instalado (`sudo pacman -S github-cli`, usuario rodou) e autenticado
+(`gh auth login`, usuario rodou — ambos interativos, nao dava pra fazer por
+aqui). Tag `v0.1.0` criada e empurrada; Release publicado em
+github.com/eliasfarah/playsync/releases/tag/v0.1.0 com
+`playsync-0.1.0-x86_64-linux.tar.gz` anexado (binarios + unit systemd + README
++ LICENSE).
+
+## Achado (nao resolvido): `makepkg` do PKGBUILD falha ao linkar
+
+Testando o PKGBUILD de ponta a ponta (`makepkg -f`, fora do escopo pedido, so
+validacao extra): falha reproduzivel com `ld.lld: error: undefined symbol:
+aws_lc_0_42_0_*` (varios simbolos da `aws-lc-sys`/`rustls`, dependencia
+transitiva do `reqwest`). Investigado a fundo:
+
+- **Nao e flakiness** — falha 2x seguidas, deterministico.
+- **Nao reproduz** com os MESMOS passos do PKGBUILD (`cargo fetch --locked`
+  + `cargo build --frozen --release --workspace`) rodados na mao, inclusive
+  com o tarball baixado de verdade do GitHub e as mesmas `CFLAGS`/`LDFLAGS`
+  do `/etc/makepkg.conf` exportadas manualmente.
+- **So falha dentro do `makepkg` de verdade.** Sinal encontrado: o log da
+  `aws-lc-sys` dentro do `makepkg` mostra o aviso `_FORTIFY_SOURCE requires
+  compiling with optimization (-O)` (ausente no build manual) e a
+  `libaws_lc_0_42_0_crypto.a` resultante fica bem maior (16.8MB vs 6.6MB) —
+  ou seja, o `CFLAGS` (`-O2` etc.) nao esta chegando no compilador C dentro
+  do ambiente do `makepkg`, mesmo com a mesma variavel exportada. Ainda
+  assim, o simbolo (ex: `aws_lc_0_42_0_EVP_sha1`) **esta presente** no `.a`
+  gerado dos dois lados (confirmado com `nm`) — entao a causa exata de por
+  que o link final falha so no `makepkg` nao foi encontrada (suspeita: ordem
+  dos objetos/arquivos na linha de comando do linker, ou algo no
+  `cc`/`cc-rs` que se comporta diferente sob o ambiente/PATH sanitizado do
+  `makepkg`).
+- Nao e falta de `cmake`/`nasm`/`clang` (nenhum dos tres esta instalado, e
+  ainda assim o build manual funciona sem eles).
+
+**Nao investigado mais fundo** (decisao de escopo, nao limitacao): o pedido
+da sessao era so README + release, isso foi validacao extra por conta
+propria. Antes de recomendar o pacote AUR como pronto pra uso, esse link
+precisa ser resolvido ou contornado (candidatos: fixar `opt-level` do
+profile release pra algo que o `cc` aceite sem ambiguidade, forcar
+`AWS_LC_SYS_STATIC=1` ou outra env var do `aws-lc-sys` pra pular a deteccao
+"dynamic vs static", ou builds isolados tipo Docker/`extra-x86_64-build` pra
+reproduzir e comparar `strace`/ordem de linkedit).
 
 ## Maquina de dev (hostname "gaming", Arch Linux)
 
