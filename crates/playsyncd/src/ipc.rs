@@ -64,7 +64,15 @@ async fn handle_request(engine: &Arc<SyncEngine>, request: Request) -> Response 
             games: engine.status_snapshot().await,
         },
         Request::SyncNow { app_id } => {
-            engine.sync_now(app_id).await;
+            // Dispara em background e responde na hora: sincronizar "tudo" pode
+            // levar bastante tempo (um jogo de cada vez, rede pra cada upload),
+            // e o cliente (CLI/TUI) nao pode ficar bloqueado esperando terminar
+            // so pra saber que foi aceito. Progresso real fica visivel via
+            // `Status` (cada jogo marca `Running` antes de zipar/subir).
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                engine.sync_now(app_id).await;
+            });
             Response::Ack
         }
         Request::History { limit } => match engine.history_entries(limit) {

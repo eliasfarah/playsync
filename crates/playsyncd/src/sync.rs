@@ -93,6 +93,11 @@ impl SyncEngine {
             return;
         }
 
+        // Marca "sincronizando..." *antes* de zipar/subir, nao so no fim — sem
+        // isso, `playsync status`/a TUI nao tem como distinguir "parado" de
+        // "no meio de um sync de varios jogos" enquanto ele roda.
+        self.mark_running(game.app_id).await;
+
         let sanitized_name = naming::sanitize(&game.name);
         let multiple = game.save_paths.len() > 1;
         let mut last_err = None;
@@ -159,9 +164,11 @@ impl SyncEngine {
 
     pub async fn status_snapshot(&self) -> Vec<GameStatus> {
         let games = steam::discover_games().unwrap_or_default();
+        let ignored = self.config.lock().await.ignored_app_ids.clone();
         let status = self.status.lock().await;
         games
             .into_iter()
+            .filter(|g| !ignored.contains(&g.app_id))
             .map(|g| {
                 let last_backup = self
                     .history

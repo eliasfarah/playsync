@@ -62,10 +62,16 @@ mostra "sim" apos o fix, "nao" antes). Zips temporarios confirmados apagados
 depois. Esse era exatamente o jogo que dava erro "nao consegui ler ...
 AppData/LocalLow" nos logs do daemon antes do fix.
 
-Nota a parte, achada durante a validacao (nao mexida, so registrada): a coluna
-"STATUS" de `playsync status` mostra "nunca sincronizado" pra todo mundo mesmo
-quando ha backup recente na coluna "ULTIMO BACKUP" — parece nao ler
-`sync_status` corretamente. Bug de exibicao, nao afeta o backup em si.
+**Explicado (nao e bug):** a coluna "STATUS" mostrava "nunca sincronizado" pra
+todo mundo logo apos reiniciar o daemon, mesmo com backup recente em "ULTIMO
+BACKUP". Causa: `sync_status` e um `HashMap` em memoria (`SyncEngine.status`,
+zerado a cada restart do daemon), enquanto "ultimo backup" vem do sqlite
+(persistente). Ate um jogo ser sincronizado de novo NESSA execucao do daemon,
+o status cai no default `NeverSynced` — nao ha leitura errada de campo, so
+duas fontes com tempos de vida diferentes. Confirmado ao vivo (ver secao do
+`SyncNow` em background abaixo): rodando um sync de tudo, cada jogo passa
+visivelmente de "nunca sincronizado" → "sincronizando..." → "em dia" na
+ordem em que o daemon processa a lista.
 
 ## Organizacao em pastas (local + nuvem) + backend do Box: RESOLVIDO (2026-07-04)
 
@@ -128,6 +134,60 @@ pasta. Sao orfaos agora — o usuario pode apagar manualmente quando quiser.
 
 `uuid` removido do workspace (nao usado mais depois que `zip_path` parou de
 gerar nome aleatorio).
+
+## TUI travando no `[s]` (sync tudo) + "Steam" listado como jogo: RESOLVIDO (2026-07-04)
+
+Usuario reportou: apertar `[s]` na TUI pra sincronizar tudo "trava" — e
+perguntou se e bug (sim) e se tem alguma animacao de upload (nao tinha
+nenhuma). Tambem notou "Steamworks Common Redistributables" (e outros
+utilitarios) aparecendo como se fossem jogo.
+
+**Causa do travamento (confirmada lendo o codigo, nao so suposicao):**
+`Request::SyncNow` no daemon (`playsyncd/src/ipc.rs`) fazia
+`engine.sync_now(app_id).await` **antes** de responder — ou seja, sincronizar
+"tudo" so respondia depois de zipar+subir CADA jogo elegivel, sequencialmente.
+A TUI (`tui.rs`) da `.await` nessa chamada direto dentro do handler da tecla
+`[s]`, entao o loop de render inteiro fica parado (sem redesenhar nada, sem
+spinner nenhum) ate a sincronizacao inteira acabar. Com ~18 jogos e upload
+real pra nuvem, parece travado de verdade mas so estava lento.
+
+**Fix:**
+1. `ipc.rs`: `SyncNow` agora dispara `engine.sync_now(app_id)` num
+   `tokio::spawn` e responde `Ack` na hora. Bate com o texto que a CLI ja
+   usava ("sincronizacao disparada") — a intencao sempre foi fire-and-forget,
+   so a implementacao nao acompanhava.
+2. `sync.rs::sync_one`: agora chama `mark_running()` **antes** de zipar/subir
+   (nao so no fim) — sem isso nao daria pra ver progresso nenhum mesmo com o
+   `SyncNow` em background.
+3. `tui.rs`: loop principal agora re-consulta `Status` sozinho a cada ~1s
+   (4 polls de 250ms), nao so quando o usuario aperta `[r]`. E o que faz o
+   progresso aparecer sem precisar ficar apertando tecla.
+
+**Validado ao vivo:** `time playsync sync` (sem app-id, ~18 jogos elegiveis)
+voltou em 3ms (antes ficaria bloqueado pelo tempo total do sync). Rodando
+`playsync status` repetidas vezes logo em seguida, cada jogo migrou
+visivelmente "nunca sincronizado" → "sincronizando..." → "em dia" na ordem
+processada pelo daemon, terminando com todos "em dia" e `history` mostrando
+os uploads reais completos.
+
+**"Steam" listado como jogo — causa:** `steamlocate` (e o Steam local, via
+appmanifest `.acf`) nao guarda um campo "isso e jogo vs ferramenta" — essa
+distincao vem do catalogo remoto da Valve (appinfo.vdf, formato binario, fora
+do escopo do que o steamlocate parseia). Sem esse campo, a unica forma de
+diferenciar seria bater numa API externa por AppID (rede, lento) ou parsear
+o binario na mao (fragil).
+
+**Fix (deteccao automatica, sem lista manual):** `steam::is_steam_tool(name)`
+em `steam.rs` filtra por prefixo de nome — `"Steamworks Common
+Redistributables"` (exato), `"Proton"*`, `"Steam Linux Runtime"*` — aplicado
+direto em `discover_games()`, entao vale pra tudo (status, TUI, sync,
+restore) sem precisar tocar em `ignored_app_ids`. Cobre os 5 casos reais desta
+maquina (Steamworks Common Redistributables 228980, Proton Experimental
+1493710, Proton 10.0 3658110, Steam Linux Runtime 3.0 (sniper) 1628350, Steam
+Linux Runtime 4.0 4183110) e versoes futuras pelo mesmo padrao de nome (ex:
+"Proton 11.0"), ja que e a convencao de nomenclatura da Valve pra essas
+ferramentas. `ignored_app_ids` continua disponivel pro usuario ignorar jogos
+de verdade que ele nao quer sincronizar.
 
 ## `playsync restore` + fim das duplicatas no Drive: RESOLVIDO (2026-07-04)
 

@@ -39,9 +39,13 @@ pub fn discover_games() -> Result<Vec<GameSave>> {
                 }
             };
 
+            let name = app.name.clone().unwrap_or_else(|| app.install_dir.clone());
+            if is_steam_tool(&name) {
+                continue;
+            }
+
             let install_dir = library.resolve_app_dir(&app);
             let save_paths = find_save_candidates(&steam_dir, &library, &app);
-            let name = app.name.clone().unwrap_or_else(|| app.install_dir.clone());
 
             games.push(GameSave {
                 app_id: app.app_id,
@@ -53,6 +57,20 @@ pub fn discover_games() -> Result<Vec<GameSave>> {
     }
 
     Ok(games)
+}
+
+/// Reconhece "apps" da Steam que na verdade sao ferramentas/runtimes
+/// instalados como dependencia de outros jogos (Proton, Steam Linux Runtime,
+/// redistributables do Steamworks) — nunca tem save de jogador, so poluem a
+/// lista. Nao ha campo local confiavel pra "tipo" do app (a distincao
+/// game/tool vem do catalogo remoto da Valve, nao do appmanifest local);
+/// esses tres seguem convencao de nome estavel o suficiente pra detectar por
+/// prefixo, inclusive versoes futuras (ex: "Proton 11.0", "Steam Linux
+/// Runtime 5.0").
+fn is_steam_tool(name: &str) -> bool {
+    name == "Steamworks Common Redistributables"
+        || name.starts_with("Proton")
+        || name.starts_with("Steam Linux Runtime")
 }
 
 /// Caminhos onde um jogo *costuma* guardar saves no Linux:
@@ -88,4 +106,31 @@ fn find_save_candidates(steam_dir: &SteamDir, library: &Library, app: &App) -> V
     }
 
     candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_known_steam_tools() {
+        assert!(is_steam_tool("Steamworks Common Redistributables"));
+        assert!(is_steam_tool("Proton Experimental"));
+        assert!(is_steam_tool("Proton 10.0"));
+        assert!(is_steam_tool("Steam Linux Runtime 3.0 (sniper)"));
+        assert!(is_steam_tool("Steam Linux Runtime 4.0"));
+    }
+
+    #[test]
+    fn recognizes_future_versions_by_prefix() {
+        assert!(is_steam_tool("Proton 11.0"));
+        assert!(is_steam_tool("Steam Linux Runtime 5.0"));
+    }
+
+    #[test]
+    fn does_not_flag_real_games() {
+        assert!(!is_steam_tool("DARK SOULS™ II: Scholar of the First Sin"));
+        assert!(!is_steam_tool("ELDEN RING"));
+        assert!(!is_steam_tool("Marvel's Spider-Man 2"));
+    }
 }

@@ -18,30 +18,52 @@ use ratatui::Frame;
 
 use crate::ipc_client;
 
+/// Intervalo entre polls de teclado; tambem usado como base pro auto-refresh
+/// periodico do status (ver `AUTO_REFRESH_TICKS` abaixo).
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// A cada quantos polls (sem tecla nenhuma) o status e reconsultado sozinho —
+/// sem isso, depois de `[s]` a tela so mostra progresso se o usuario ficar
+/// apertando `[r]` na mao. `SyncNow` responde na hora (o sync roda em
+/// background no daemon), entao esse refresh periodico e a unica forma de
+/// ver os jogos passando por "sincronizando..." ate acabar.
+const AUTO_REFRESH_TICKS: u32 = 4; // 4 * 250ms = ~1s
+
 pub async fn run() -> Result<()> {
     let mut games = fetch_status().await.unwrap_or_default();
 
     let mut terminal = ratatui::init();
+    let mut ticks_since_refresh = 0u32;
     let result = loop {
         if let Err(err) = terminal.draw(|frame| draw(frame, &games)) {
             break Err(err.into());
         }
 
-        match event::poll(Duration::from_millis(250)) {
+        match event::poll(POLL_INTERVAL) {
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
-                    KeyCode::Char('r') => games = fetch_status().await.unwrap_or_default(),
-                    KeyCode::Char('s') => {
-                        let _ = ipc_client::send(Request::SyncNow { app_id: None }).await;
+                    KeyCode::Char('r') => {
                         games = fetch_status().await.unwrap_or_default();
+                        ticks_since_refresh = 0;
+                    }
+                    KeyCode::Char('s') => {
+                        // So dispara — `SyncNow` volta na hora, o sync roda em
+                        // background no daemon. O refresh periodico abaixo
+                        // (nao esta chamada) e quem mostra o progresso.
+                        let _ = ipc_client::send(Request::SyncNow { app_id: None }).await;
                     }
                     _ => {}
                 },
                 Ok(_) => {}
                 Err(err) => break Err(err.into()),
             },
-            Ok(false) => {}
+            Ok(false) => {
+                ticks_since_refresh += 1;
+                if ticks_since_refresh >= AUTO_REFRESH_TICKS {
+                    games = fetch_status().await.unwrap_or_default();
+                    ticks_since_refresh = 0;
+                }
+            }
             Err(err) => break Err(err.into()),
         }
     };
