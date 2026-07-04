@@ -1,6 +1,6 @@
 # Maintainer: Elias Farah <234085+eliasfarah@users.noreply.github.com>
 pkgname=playsync
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Backup automatico de saves da Steam para a nuvem (daemon systemd --user + CLI/TUI)"
 arch=('x86_64')
@@ -10,6 +10,15 @@ depends=('gcc-libs' 'systemd')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/eliasfarah/playsync/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
+# O `lto` padrao do makepkg injeta -flto=auto em CFLAGS/CXXFLAGS/LDFLAGS. A
+# aws-lc-sys (dependencia transitiva do reqwest/rustls) compila C com esse
+# CFLAGS; o resultado sao objetos GCC-LTO que o link final do Rust (que nao
+# participa da mesma sessao de LTO do gcc) nao consegue resolver — dá
+# "undefined symbol: aws_lc_0_42_0_*" mesmo com o simbolo presente no .a
+# gerado. Confirmado isolando so essa flag fora do makepkg tambem. O LTO do
+# proprio Rust (`[profile.release] lto = true` no Cargo.toml) continua ativo
+# normalmente — isso so desliga o LTO que o makepkg tentaria aplicar no C.
+options=('!lto')
 
 prepare() {
     cd "$pkgname-$pkgver"
