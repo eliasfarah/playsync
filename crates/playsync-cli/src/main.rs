@@ -65,6 +65,18 @@ enum CloudCommand {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
 
+    // So importa pros comandos que chamam `discover_games` direto (restore,
+    // TUI) — `status`/`sync`/`history` falam com o daemon, que cuida do seu
+    // proprio refresh. Cache fresco (< 7 dias) nao gera nenhuma chamada de
+    // rede, entao isso e barato na maioria das execucoes.
+    tokio::spawn(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("configuracao do reqwest::Client e estatica e valida");
+        let _ = playsync_core::manifest::refresh_cache(&client, std::time::Duration::from_secs(7 * 24 * 3600)).await;
+    });
+
     let cli = Cli::parse();
     match cli.command {
         // Sem subcomando: abre a TUI, o modo de uso interativo padrao.
@@ -91,11 +103,15 @@ async fn print_status() -> Result<()> {
 
     println!("{:<40} {:<20} STATUS", "JOGO", "ULTIMO BACKUP");
     for game in games {
-        let status = match game.sync_status {
-            SyncStatus::NeverSynced => "nunca sincronizado",
-            SyncStatus::Idle => "em dia",
-            SyncStatus::Running => "sincronizando...",
-            SyncStatus::Error => "erro",
+        let status = if !game.has_save_paths {
+            "⚠ sem save detectado (veja extra_save_paths no config.toml)"
+        } else {
+            match game.sync_status {
+                SyncStatus::NeverSynced => "nunca sincronizado",
+                SyncStatus::Idle => "em dia",
+                SyncStatus::Running => "sincronizando...",
+                SyncStatus::Error => "erro",
+            }
         };
         let last_backup = game
             .last_backup

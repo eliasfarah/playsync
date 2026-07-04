@@ -16,6 +16,10 @@ dirs = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 
+# Le/indexa o manifest da Ludusavi (locais de save conhecidos, ver manifest.rs)
+serde_yaml = { workspace = true }
+glob = { workspace = true }
+
 # Deteccao de bibliotecas/AppIDs da Steam (libraryfolders.vdf, appmanifest_*.acf)
 steamlocate = "2"
 
@@ -24,7 +28,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Cliente HTTP para os backends de nuvem (rustls no lugar de OpenSSL: facilita build estatico/musl)
 # "multipart": Box usa multipart/form-data pro upload (Drive usa multipart/related, montado na mao).
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "multipart"] }
+reqwest = { workspace = true, features = ["multipart"] }
 async-trait = "0.1"
 
 # Fluxo OAuth2 (Google Drive / Box): abre o navegador do usuario e recebe o

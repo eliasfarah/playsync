@@ -6,5 +6,6 @@ pub mod cloud;
 pub mod config;
 pub mod db;
 pub mod ipc;
+pub mod manifest;
 pub mod naming;
 pub mod steam;

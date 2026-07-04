@@ -19,10 +19,23 @@ pub struct GameSave {
 }
 
 /// Varre todas as bibliotecas Steam da maquina e retorna os jogos instalados
-/// junto com os caminhos de save que conseguimos inferir.
+/// junto com os caminhos de save que conseguimos inferir. Tambem inclui
+/// qualquer `extra_save_paths` configurado pelo usuario (`config.toml`) pra
+/// jogos que a deteccao automatica nao acha sozinha.
 pub fn discover_games() -> Result<Vec<GameSave>> {
     let steam_dir = SteamDir::locate().context("Steam nao encontrada nesta maquina")?;
     let mut games = Vec::new();
+
+    // Falha em carregar a config nao deve impedir a deteccao normal — so
+    // significa que nenhum caminho extra e aplicado.
+    let extra_save_paths = crate::config::Config::load_or_default()
+        .map(|c| c.extra_save_paths)
+        .unwrap_or_default();
+
+    // Indice do manifest da Ludusavi (locais de save conhecidos por AppID) —
+    // so le o cache local em disco, sem rede (ver `manifest::refresh_cache`).
+    // Vazio se o cache ainda nao foi baixado nenhuma vez.
+    let manifest_index = crate::manifest::appid_index();
 
     for library in steam_dir
         .libraries()
@@ -45,7 +58,34 @@ pub fn discover_games() -> Result<Vec<GameSave>> {
             }
 
             let install_dir = library.resolve_app_dir(&app);
-            let save_paths = find_save_candidates(&steam_dir, &library, &app);
+
+            // O manifest manda quando o jogo tem `files` documentado (mais
+            // preciso, e as vezes corrige a heuristica — ver doc do modulo
+            // `manifest`), MESMO que resolva pra zero caminhos: um jogo
+            // documentado so com `tags: [config]` (ex: "The Division", cujo
+            // progresso e todo em servidor) informa de verdade que nao ha
+            // save local, e nao deveria cair pra heuristica so por isso —
+            // senao voltamos a fazer backup de config achando que e save.
+            // So cai pra heuristica quando o manifest simplesmente nao tem
+            // nenhuma entrada de `files` pro jogo (nada documentado ainda).
+            let mut save_paths = match manifest_index.get(&app.app_id) {
+                Some(entry) if !entry.files.is_empty() => crate::manifest::resolve_save_paths(
+                    entry,
+                    app.app_id,
+                    library.path(),
+                    steam_dir.path(),
+                    &install_dir,
+                ),
+                _ => find_save_candidates(&steam_dir, &library, &app),
+            };
+
+            if let Some(extra) = extra_save_paths.get(&app.app_id.to_string()) {
+                for path in extra {
+                    if path.is_dir() && !save_paths.contains(path) {
+                        save_paths.push(path.clone());
+                    }
+                }
+            }
 
             games.push(GameSave {
                 app_id: app.app_id,
@@ -73,9 +113,25 @@ fn is_steam_tool(name: &str) -> bool {
         || name.starts_with("Steam Linux Runtime")
 }
 
+/// Subpastas que o Wine/Proton cria por padrao em *todo* prefixo novo (vazias,
+/// nada a ver com o jogo) — confirmado comparando o `Documents/` de varios
+/// AppIDs diferentes nesta maquina. Filtradas pra nao tratar
+/// `Documents/Pictures` etc. como se fosse save de jogo. `"My Games"` tambem
+/// entra aqui: e tratada a parte, descendo mais um nivel (ver abaixo), entao
+/// nao pode ser candidata ela mesma — senao o mesmo save seria zipado/subido
+/// duas vezes (a pasta toda e de novo a subpasta do jogo dentro dela).
+const DEFAULT_DOCUMENTS_SUBFOLDERS: &[&str] =
+    &["Pictures", "Music", "Videos", "Downloads", "Templates", "My Games"];
+
 /// Caminhos onde um jogo *costuma* guardar saves no Linux:
 /// 1. Prefixo Proton do AppID (`compatdata/<id>/pfx/.../AppData/{Roaming,Local,LocalLow}`);
-/// 2. Espelho da Steam Cloud (`userdata/<steamid3>/<id>/remote`), que existe mesmo para
+/// 2. `Documents/<algo>` e `Documents/My Games/<algo>` — convencao comum de
+///    jogos (sobretudo Unity/Unreal) que nao usam AppData. Como o Wine/Proton
+///    cria as mesmas pastas padrao (vazias) em todo prefixo novo, ignoramos
+///    os nomes conhecidos de pasta padrao (`DEFAULT_DOCUMENTS_SUBFOLDERS`).
+/// 3. `Saved Games/<algo>` — pasta especial do Windows (desde Vista) dedicada
+///    a saves; o Wine cria ela vazia, entao qualquer subpasta ali e do jogo.
+/// 4. Espelho da Steam Cloud (`userdata/<steamid3>/<id>/remote`), que existe mesmo para
 ///    jogos nativos de Linux que usam a Steam Cloud API.
 ///
 /// Jogos que gravam save em outros lugares (ex: `~/.config/<jogo>`) ficam de fora por ora;
@@ -83,17 +139,24 @@ fn is_steam_tool(name: &str) -> bool {
 fn find_save_candidates(steam_dir: &SteamDir, library: &Library, app: &App) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    let appdata = library
+    let user_dir = library
         .path()
         .join("steamapps/compatdata")
         .join(app.app_id.to_string())
-        .join("pfx/drive_c/users/steamuser/AppData");
+        .join("pfx/drive_c/users/steamuser");
+
+    let appdata = user_dir.join("AppData");
     for sub in ["Roaming", "Local", "LocalLow"] {
         let path = appdata.join(sub);
         if path.is_dir() {
             candidates.push(path);
         }
     }
+
+    let documents = user_dir.join("Documents");
+    candidates.extend(subdirs_excluding(&documents, DEFAULT_DOCUMENTS_SUBFOLDERS));
+    candidates.extend(subdirs_excluding(&documents.join("My Games"), &[]));
+    candidates.extend(subdirs_excluding(&user_dir.join("Saved Games"), &[]));
 
     let userdata_root = steam_dir.path().join("userdata");
     if let Ok(entries) = fs::read_dir(&userdata_root) {
@@ -106,6 +169,28 @@ fn find_save_candidates(steam_dir: &SteamDir, library: &Library, app: &App) -> V
     }
 
     candidates
+}
+
+/// Subdiretorios diretos de `dir` (arquivos soltos ignorados), pulando os
+/// nomes em `exclude`. Silenciosamente vazio se `dir` nao existir.
+fn subdirs_excluding(dir: &std::path::Path, exclude: &[&str]) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if exclude.contains(&name) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,5 +217,21 @@ mod tests {
         assert!(!is_steam_tool("DARK SOULS™ II: Scholar of the First Sin"));
         assert!(!is_steam_tool("ELDEN RING"));
         assert!(!is_steam_tool("Marvel's Spider-Man 2"));
+    }
+
+    #[test]
+    fn subdirs_excluding_skips_known_defaults_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Pictures")).unwrap();
+        std::fs::create_dir(dir.path().join("My Game Save")).unwrap();
+        std::fs::write(dir.path().join("loose_file.txt"), b"x").unwrap();
+
+        let found = subdirs_excluding(dir.path(), DEFAULT_DOCUMENTS_SUBFOLDERS);
+        assert_eq!(found, vec![dir.path().join("My Game Save")]);
+    }
+
+    #[test]
+    fn subdirs_excluding_empty_for_missing_dir() {
+        assert!(subdirs_excluding(std::path::Path::new("/nonexistent/playsync-test"), &[]).is_empty());
     }
 }

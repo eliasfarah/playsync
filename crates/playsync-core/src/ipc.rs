@@ -44,6 +44,11 @@ pub struct GameStatus {
     pub name: String,
     pub last_backup: Option<DateTime<Utc>>,
     pub sync_status: SyncStatus,
+    /// `false` quando nenhuma pasta de save foi detectada pra esse jogo —
+    /// distingue "ainda nao sincronizou" de "nunca vai sincronizar sozinho
+    /// porque nao acha onde o save fica" (o jogo pode guardar save num
+    /// lugar fora do convencional; ver `extra_save_paths` no config.toml).
+    pub has_save_paths: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

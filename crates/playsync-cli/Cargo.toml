@@ -19,6 +19,7 @@ tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
 
 clap = { version = "4", features = ["derive"] }
 # Usamos `ratatui::crossterm` (re-exportado) em vez de uma dependencia

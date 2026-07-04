@@ -1,5 +1,6 @@
 //! Configuracao do usuario, persistida em `~/.config/playsync/config.toml`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -19,6 +20,14 @@ pub struct Config {
     /// Raiz do backup local (um "PlaySync/<jogo>/" espelhando a estrutura da
     /// nuvem). `None` usa o default (`local_backup_root()`).
     pub local_backup_dir: Option<PathBuf>,
+    /// Pastas de save adicionais, por AppID (chave string — chave de tabela
+    /// TOML e sempre string), pra jogos que a deteccao automatica
+    /// (`steam::find_save_candidates`) nao acha sozinha. Util quando o jogo
+    /// guarda save num lugar fora da convencao usual — o PCGamingWiki
+    /// (pcgamingwiki.com, pagina do jogo, secao "Save game data location")
+    /// costuma ter o caminho exato. Precisa ser o caminho absoluto de
+    /// verdade no disco (dentro do prefixo Proton do jogo).
+    pub extra_save_paths: HashMap<String, Vec<PathBuf>>,
 }
 
 impl Default for Config {
@@ -28,6 +37,7 @@ impl Default for Config {
             ignored_app_ids: Vec::new(),
             sync_debounce_secs: 5,
             local_backup_dir: None,
+            extra_save_paths: HashMap::new(),
         }
     }
 }

@@ -418,6 +418,176 @@ reproduzir e comparar `strace`/ordem de linkedit).
 - Repo commitado e com push pro GitHub (ver secao acima). `git config
   user.*` configurado so neste repo (nao `--global`).
 
+## Deteccao de save em Documents/My Games/Saved Games + extra_save_paths: RESOLVIDO (2026-07-04)
+
+Retomando um trabalho que ja estava no working tree (nao commitado, nao
+documentado ainda) no inicio desta sessao: `find_save_candidates`
+(`steam.rs`) so olhava `AppData/{Roaming,Local,LocalLow}` e o espelho da
+Steam Cloud — jogos que guardam save em `Documents/<jogo>`, `Documents/My
+Games/<jogo>` ou `Saved Games/<jogo>` (convencao comum, sobretudo
+Unity/Unreal) ficavam de fora, silenciosamente.
+
+- `find_save_candidates` ganhou 3 fontes novas: subpastas diretas de
+  `Documents/` (exceto as padrao que Wine/Proton cria vazias em todo prefixo
+  novo: Pictures/Music/Videos/Downloads/Templates/**My Games**), subpastas de
+  `Documents/My Games/` (descendo mais um nivel), e subpastas de `Saved
+  Games/`. Helper novo `subdirs_excluding()`.
+- `Config` ganhou `extra_save_paths: HashMap<String, Vec<PathBuf>>` (por
+  AppID, chave string por causa do TOML) pro usuario apontar na mao um save
+  que a deteccao automatica nao ache — `discover_games()` agora le o config
+  e mescla. `GameStatus`/`ipc.rs` ganhou `has_save_paths: bool`; CLI/TUI
+  mostram "⚠ sem save detectado" quando `false`, em vez de confundir com
+  "nunca sincronizado".
+- **Bug achado e corrigido durante a validacao ao vivo** (nao existia no
+  diff original): `"My Games"` nao estava na lista de exclusao do scan de
+  `Documents/` de nivel superior, entao pra jogos com `Documents/My
+  Games/<jogo>` (ex: The Division) o candidato virava TANTO
+  `Documents/My Games` (a pasta toda) QUANTO `Documents/My Games/<jogo>` —
+  zipava/subia o mesmo save duas vezes. Corrigido adicionando `"My Games"`
+  a `DEFAULT_DOCUMENTS_SUBFOLDERS`.
+
+**Validado ao vivo, end-to-end, nesta maquina** (rebuild release, reinstalado
+em `~/.local/bin`, daemon reiniciado):
+- Exemplo mais claro: **God of War** (appid 1593500) — antes do fix so tinha
+  os 3 diretorios AppData (todos praticamente vazios, so pastas padrao do
+  Wine). O save real (`game.sav`, 33MB) fica em `Saved Games/God of War/`,
+  invisivel pra deteccao antiga. Rodei `playsync sync --app-id 1593500` de
+  verdade: 4 save_paths detectados (Roaming/Local/LocalLow/Saved Games),
+  `save-3.zip` confirmado contendo `game.sav` de 33MB, upload real pro
+  Google Drive confirmado (`playsync history` mostra "Local + GoogleDrive
+  sim").
+- Outros 6 jogos desta maquina onde a deteccao nova achou pasta real (nao so
+  testado, so confirmado que os caminhos aparecem): Horizon Zero Dawn,
+  Ghost of Tsushima, The Last of Us Part II, Marvel's Spider-Man 2, Tom
+  Clancy's The Division (com o fix da duplicacao acima), Grand Theft Auto
+  IV, FINAL FANTASY VII (2013) — este ultimo com save aninhado 2 niveis
+  (`Documents/Square Enix/FINAL FANTASY VII Steam/`), a pasta inteira
+  `Square Enix` vira o save_path (zipa tudo dentro, inclusive o que nao e
+  save, ex: launcher logs — aceitavel, so nao granular).
+- `extra_save_paths` em si (o caminho manual configuravel) nao foi exercitado
+  ao vivo — nenhum jogo desta maquina precisou dele (todos acharam save por
+  deteccao automatica). Continua sem teste end-to-end real.
+
+**Ainda nao commitado** — 6 arquivos modificados (`main.rs`, `tui.rs`,
+`config.rs`, `ipc.rs`, `steam.rs`, `sync.rs`), aguardando o usuario decidir.
+
+## Integracao com o manifest da Ludusavi (fonte confiavel de save location): RESOLVIDO (2026-07-04)
+
+Usuario pediu uma fonte mais confiavel de onde os saves ficam no Linux/Steam
+do que a heuristica de pastas conhecidas (a da secao acima), citando
+PCGamingWiki e Ludusavi. Pesquisado a fundo antes de implementar: o
+`ludusavi-manifest` (github.com/mtkennerly/ludusavi-manifest, MIT) e um YAML
+de ~17MB com +19 mil jogos, curado do PCGamingWiki mas ja estruturado pra
+consumo automatico — cada jogo tem `steam.id`, uma secao `files` com
+caminhos exatos (`tags: [save]` ou `[config]`) e `when` (os/store) pra
+filtrar. O crate `ludusavi` em si NAO e biblioteca (so binario), mas o dado
+(YAML) e livre pra consumir direto. Perguntei ao usuario 2 coisas antes de
+codar (respondidas com a opcao recomendada nas duas):
+1. Papel do manifest vs. heuristica: **manifest manda quando documentado,
+   heuristica so cobre jogos ausentes do manifest**.
+2. Estrategia de fetch: **baixar e cachear localmente
+   (`~/.local/state/playsync/ludusavi_manifest.yaml`), revalidar por ETag**
+   (`If-None-Match`, max_age 7 dias) — offline depois do 1o download.
+
+**Modulo novo `playsync-core/src/manifest.rs`:**
+- `refresh_cache(client, max_age)`: async, so faz rede se o cache local tiver
+  mais de `max_age` (ou nao existir). 304 so atualiza o arquivo de ETag (pra
+  nao re-checar antes do prazo); 200 grava manifest + etag novos. Chamado
+  em background no startup do daemon (`playsyncd/main.rs`, `tokio::spawn`,
+  nao atrasa nem bloqueia o daemon se a rede cair) e da CLI (`main.rs`, best
+  effort — util pro TUI de longa duracao, um `restore` de execucao rapida
+  pode nao dar tempo de terminar, tudo bem, o daemon mantem o cache quente).
+- `appid_index()`: le SO o cache local (sem rede) e reparseia so quando o
+  mtime do arquivo muda (`Mutex<Option<(SystemTime, Arc<HashMap<..>>)>>`) —
+  essencial porque `discover_games()` roda com frequencia (poll de status da
+  TUI a cada ~250ms) e o YAML tem 17MB, reparsear toda vez seria lento
+  demais. Retorna `Arc` pra clonar barato entre chamadas.
+- `resolve_save_paths(entry, app_id, library_path, steam_root, install_dir)`:
+  substitui os placeholders do template (`<home>`, `<winAppData>`,
+  `<winLocalAppData>`, `<winLocalAppDataLow>`, `<winDocuments>`, `<root>`,
+  `<base>`, `<storeGameId>`, `<xdgData>`, `<xdgConfig>` pro caso nativo
+  Linux) e roda o resultado como glob (`<storeUserId>`/`<osUserName>`/
+  `<language>` viram `*`, igual o proprio Ludusavi trata). So considera
+  entradas com `tags: [save]`; `when` filtra por ambiente (Proton = "Windows"
+  dentro do prefixo, ou Linux nativo) e por store (so aceita quando ausente
+  ou `"steam"`). Placeholder sem traducao conhecida (`<winPublic>` etc,
+  raro em save) descarta a entrada em vez de arriscar caminho errado.
+- `steam.rs::discover_games()`: pra cada AppID, se o manifest tem uma entrada
+  com `files` nao-vazio, usa `resolve_save_paths` (mesmo que resolva pra
+  ZERO caminhos — ver bug abaixo); so cai pra heuristica quando o manifest
+  nao tem NENHUM `files` documentado pro jogo.
+
+**2 bugs achados e corrigidos so por testar contra o manifest baixado de
+verdade (nao davam erro nenhum, so resultado silenciosamente errado):**
+1. **Fallback errado pra "The Division":** a entrada do manifest pra esse
+   jogo so tem `tags: [config]` (progresso e 100% em servidor, sem save
+   local — faz sentido, e sempre-online). A logica original caia pra
+   heuristica quando `resolve_save_paths` retornava vazio, sem distinguir
+   "jogo ausente do manifest" de "jogo documentado, mas sem save real" —
+   ou seja, reintroduzia exatamente o falso positivo que motivou pedir essa
+   fonte confiavel. Corrigido checando `!entry.files.is_empty()` (existe
+   algo documentado, mesmo que nada seja `save`) em vez de conferir se o
+   resultado resolvido ficou vazio.
+2. **Placeholder `<root>` nao implementado:** Mad Max, The Surge, The Surge
+   2 e Forza Horizon 5 apontam o save real via
+   `<root>/userdata/<storeUserId>/<appid>/remote` (espelho da Steam Cloud) —
+   sem suporte a `<root>`, essas 4 entradas viravam "sem save" (regressao:
+   Mad Max ja estava validado funcionando por heuristica antes). Corrigido
+   adicionando `<root>` (= `steam_dir.path()`, a instalacao Steam
+   *principal* — **nao** a biblioteca onde o jogo esta instalado, que pode
+   estar num disco/mount diferente) e `<base>` (= `install_dir` ja
+   resolvido por `library.resolve_app_dir`, entao funciona certo mesmo pra
+   jogos numa biblioteca secundaria).
+
+**Validado ao vivo, end-to-end** (rebuild release, reinstalado, daemon
+reiniciado, manifest baixado de verdade — 17MB, `~/.local/state/playsync/
+ludusavi_manifest.yaml`): comparando a lista completa de jogos desta maquina
+antes/depois:
+- **God of War**: manifest aponta so `Saved Games/God of War` (1 caminho, o
+  save real) em vez dos 4 da heuristica (3 AppData quase vazios + o certo).
+- **DARK SOULS II**: aponta o ARQUIVO exato `DS2SOFS0000.sl2` (nao mais a
+  pasta `AppData/Roaming` inteira).
+- **Ghost of Tsushima**: `<storeUserId>` resolvido certo via glob
+  (`76561197994945166`, o steamid3 real desta conta) — sync real rodado
+  (`playsync sync --app-id 2215430`), `save.zip` confirmado contendo SO os
+  12 `.sav` reais + `steam_autocloud.vdf` desse perfil (antes zipava a pasta
+  `Documents/Ghost of Tsushima...` inteira). Upload real pro Google Drive
+  confirmado (log do daemon: "upload para o Google Drive concluido";
+  `playsync history` mostra sucesso).
+- **Mad Max**: `<root>/userdata/.../remote` resolvido certo apos o fix do
+  placeholder, batendo com o que a heuristica ja achava antes (era o teste
+  de regressao).
+- **The Division**: 0 save_paths agora (antes, 1 — a pasta de config sendo
+  tratada como se fosse save). Vira "⚠ sem save detectado" na UI, o que e
+  honesto pra um jogo sempre-online.
+- **The Surge / The Surge 2 / Forza Horizon 5**: tambem 0 save_paths — nao e
+  bug, e que nenhum dos tres tem pasta `userdata/<id>/<appid>` criada nesta
+  conta (nunca sincronizaram via Steam Cloud, possivelmente nunca jogados
+  nesta maquina) nem save local documentado pra Steam (so pra Microsoft
+  Store, `store: microsoft`, que nao se aplica). Confirmado olhando o
+  filesystem direto — a heuristica antiga dava falsa confianca aqui (3
+  pastas AppData vazias, sem save real nenhum dentro).
+
+**Gaps conhecidos, nao resolvidos:**
+- `<storeUserId>` nao e resolvido pro ID exato da conta logada, vira glob
+  `*` — funciona bem em maquina de usuario unico (so um steamid3 sob
+  `userdata/`), mas pegaria saves de TODAS as contas Steam que ja logaram
+  nesta maquina se houver mais de uma.
+- `<base>`/`<root>` cobrem os casos vistos nesta maquina; outros
+  placeholders raros (`<winPublic>`, `<winProgramData>`, `<winDir>`, jogos
+  com `<game>` em `files`) nao tem traducao — a entrada e descartada nesse
+  caso (log em `debug`), nao trava nada, so significa que aquele arquivo
+  especifico do manifest fica de fora ate alguem implementar.
+- Sem comando explicito pra forcar refresh do manifest (`playsync manifest
+  update` ou similar) — so acontece automatico no startup do daemon/CLI, ou
+  esperando os 7 dias do `max_age`.
+
+**Ainda nao commitado** junto com a secao anterior (deteccao Documents/My
+Games/Saved Games) — dependencias novas (`serde_yaml`, `glob`, `reqwest`
+promovido pra `workspace.dependencies` e agora usado tambem por `playsyncd`/
+`playsync-cli`), modulo `manifest.rs` novo, `steam.rs`/`main.rs` (dos dois
+binarios) modificados.
+
 ## Como validar antes de dizer "pronto"
 
 Os bugs acima so apareceram porque testamos ao vivo (jogo real abrindo/

@@ -21,4 +21,5 @@ tracing-journald = "0.3"
 dirs = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
 steamlocate = "2"

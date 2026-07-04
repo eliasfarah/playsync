@@ -26,6 +26,20 @@ async fn main() -> Result<()> {
     let history = Arc::new(HistoryDb::open_default()?);
     let engine = Arc::new(SyncEngine::new(config, history));
 
+    // Atualiza o cache local do manifest da Ludusavi em segundo plano (nao
+    // atrasa o startup do daemon nem bloqueia se a rede estiver fora — so
+    // revalida de fato se o cache tiver mais de 7 dias, ver `manifest.rs`).
+    tokio::spawn(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("configuracao do reqwest::Client e estatica e valida");
+        match playsync_core::manifest::refresh_cache(&client, std::time::Duration::from_secs(7 * 24 * 3600)).await {
+            Ok(()) => tracing::debug!("manifest da Ludusavi em dia"),
+            Err(err) => tracing::warn!(%err, "nao consegui atualizar o manifest da Ludusavi, seguindo com o cache existente (ou so heuristica)"),
+        }
+    });
+
     let ipc_engine = engine.clone();
     tokio::spawn(async move {
         if let Err(err) = ipc::serve(ipc_engine).await {

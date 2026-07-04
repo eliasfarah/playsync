@@ -349,11 +349,15 @@ fn game_title(games: &[GameStatus], app_id: u32) -> String {
 
 fn draw_table(frame: &mut Frame, games: &[GameStatus], selected: usize) {
     let rows = games.iter().enumerate().map(|(i, g)| {
-        let status = match g.sync_status {
-            SyncStatus::NeverSynced => "nunca sincronizado",
-            SyncStatus::Idle => "em dia",
-            SyncStatus::Running => "sincronizando...",
-            SyncStatus::Error => "erro",
+        let status = if !g.has_save_paths {
+            "⚠ sem save detectado"
+        } else {
+            match g.sync_status {
+                SyncStatus::NeverSynced => "nunca sincronizado",
+                SyncStatus::Idle => "em dia",
+                SyncStatus::Running => "sincronizando...",
+                SyncStatus::Error => "erro",
+            }
         };
         let last_backup = g
             .last_backup

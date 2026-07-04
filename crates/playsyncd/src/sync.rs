@@ -181,6 +181,7 @@ impl SyncEngine {
                     name: g.name,
                     last_backup,
                     sync_status: status.get(&g.app_id).cloned().unwrap_or(SyncStatus::NeverSynced),
+                    has_save_paths: !g.save_paths.is_empty(),
                 }
             })
             .collect()
