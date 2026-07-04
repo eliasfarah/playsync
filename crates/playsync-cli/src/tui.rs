@@ -72,12 +72,18 @@ enum Mode {
         path_index: usize,
         versions: Vec<actions::VersionInfo>,
         cursor: usize,
+        used_history: bool,
     },
     Confirm {
         app_id: u32,
         action: GameAction,
         path_index: usize,
         file_name: String,
+        /// A pasta de save ao vivo nao foi encontrada — o alvo abaixo veio
+        /// do historico (ultimo backup bem sucedido), nao da deteccao atual.
+        /// Mostrado ANTES de confirmar (nao so depois, no resultado) pra dar
+        /// chance de cancelar sabendo disso.
+        used_history: bool,
     },
     Info(String),
 }
@@ -176,27 +182,42 @@ pub async fn run() -> Result<()> {
                 _ => Mode::PathChoice { app_id, action, cursor, paths },
             },
 
-            Mode::VersionChoice { app_id, action, path_index, versions, cursor } => match key.code {
-                KeyCode::Esc => Mode::Table,
-                KeyCode::Up | KeyCode::Char('k') => {
-                    Mode::VersionChoice { app_id, action, path_index, cursor: cursor.saturating_sub(1), versions }
+            Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_history } => {
+                match key.code {
+                    KeyCode::Esc => Mode::Table,
+                    KeyCode::Up | KeyCode::Char('k') => Mode::VersionChoice {
+                        app_id,
+                        action,
+                        path_index,
+                        cursor: cursor.saturating_sub(1),
+                        versions,
+                        used_history,
+                    },
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let cursor = (cursor + 1).min(versions.len().saturating_sub(1));
+                        Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_history }
+                    }
+                    KeyCode::Enter => {
+                        let file_name = versions[cursor].file_name.clone();
+                        confirm_or_run(app_id, action, path_index, file_name, used_history, &game_saves).await
+                    }
+                    _ => Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_history },
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let cursor = (cursor + 1).min(versions.len().saturating_sub(1));
-                    Mode::VersionChoice { app_id, action, path_index, cursor, versions }
-                }
-                KeyCode::Enter => {
-                    let file_name = versions[cursor].file_name.clone();
-                    confirm_or_run(app_id, action, path_index, file_name, &game_saves).await
-                }
-                _ => Mode::VersionChoice { app_id, action, path_index, cursor, versions },
-            },
+            }
 
-            Mode::Confirm { app_id, action, path_index, file_name } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
+            // [Enter]/[y] confirma, [Esc] cancela — mesmo padrao das outras
+            // telas (Enter = prosseguir, Esc = cancelar). Qualquer outra
+            // tecla fica parado aqui (nao cancela sem querer): antes,
+            // qualquer tecla que nao fosse 'y' voltava pra tabela em
+            // silencio, o que o usuario confundiu com "apertei Enter e nao
+            // aconteceu nada" — Enter *parecia* ter cancelado, mas na
+            // verdade nunca tinha confirmado nada pra comecar.
+            Mode::Confirm { app_id, action, path_index, file_name, used_history } => match key.code {
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
                     Mode::Info(run_action(app_id, action, path_index, &file_name, &game_saves).await)
                 }
-                _ => Mode::Table,
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Mode::Table,
+                _ => Mode::Confirm { app_id, action, path_index, file_name, used_history },
             },
 
             Mode::Info(_) => Mode::Table,
@@ -284,7 +305,7 @@ async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, g
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return Mode::Info(format!("jogo (AppID {app_id}) nao encontrado"));
     };
-    let (paths, _) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
     let sanitized = playsync_core::naming::sanitize(&game.name);
     let paths_len = paths.len();
 
@@ -304,24 +325,27 @@ async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, g
 
     if versions.len() == 1 {
         let file_name = versions[0].file_name.clone();
-        confirm_or_run(app_id, action, path_index, file_name, game_saves).await
+        confirm_or_run(app_id, action, path_index, file_name, used_history, game_saves).await
     } else {
         let cursor = versions.len() - 1; // comeca na mais recente
-        Mode::VersionChoice { app_id, action, path_index, versions, cursor }
+        Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_history }
     }
 }
 
-/// Ultimo passo antes de executar: acoes destrutivas pedem confirmacao,
-/// as outras (baixar da nuvem, so guarda local) rodam direto.
+/// Ultimo passo antes de executar: acoes destrutivas pedem confirmacao (com
+/// o aviso de fallback pro historico ja visivel ali, nao so no resultado —
+/// da chance de cancelar sabendo que o alvo veio do ultimo backup, nao da
+/// pasta de save ao vivo), as outras (baixar da nuvem, so guarda local) rodam direto.
 async fn confirm_or_run(
     app_id: u32,
     action: GameAction,
     path_index: usize,
     file_name: String,
+    used_history: bool,
     game_saves: &[GameSave],
 ) -> Mode {
     if is_destructive(action) {
-        Mode::Confirm { app_id, action, path_index, file_name }
+        Mode::Confirm { app_id, action, path_index, file_name, used_history }
     } else {
         Mode::Info(run_action(app_id, action, path_index, &file_name, game_saves).await)
     }
@@ -416,7 +440,7 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 *cursor,
             );
         }
-        Mode::VersionChoice { app_id, versions, cursor, .. } => {
+        Mode::VersionChoice { app_id, versions, cursor, used_history, .. } => {
             let title = game_title(games, *app_id);
             let short_session_warning_secs = playsync_core::config::Config::load_or_default()
                 .map(|c| c.short_session_warning_secs)
@@ -425,23 +449,37 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 .iter()
                 .map(|v| ListItem::new(actions::format_version_label(v, short_session_warning_secs)))
                 .collect();
+            let warning = if *used_history {
+                " — ⚠ pasta de save atual nao encontrada, alvo vem do historico"
+            } else {
+                ""
+            };
             draw_menu_popup(
                 frame,
-                &format!(" {title} — qual versao restaurar? (mais recente marcada abaixo)  ([Esc] cancelar) "),
+                &format!(
+                    " {title} — qual versao restaurar? (mais recente marcada abaixo){warning}  ([Enter] escolher [Esc] cancelar) "
+                ),
                 items,
                 *cursor,
             );
         }
-        Mode::Confirm { app_id, action, file_name, .. } => {
+        Mode::Confirm { app_id, action, file_name, used_history, .. } => {
             let title = game_title(games, *app_id);
             let label = ACTIONS.iter().find(|(a, _)| *a == *action).map(|(_, l)| *l).unwrap_or("?");
+            let history_warning = if *used_history {
+                "\n⚠ A pasta de save atual NAO foi encontrada no disco — o alvo abaixo\n\
+                 e o caminho do ultimo backup bem sucedido (pode nao ser mais valido).\n"
+            } else {
+                ""
+            };
             draw_message_popup(
                 frame,
                 " Confirmar ",
                 &format!(
-                    "{title}\n\n{label}\n\nVersao: {file_name}\n\n\
+                    "{title}\n\n{label}\n\nVersao: {file_name}\n\
+                     {history_warning}\n\
                      Isso vai APAGAR o save atual do jogo.\n\n\
-                     [y] confirmar   [qualquer outra tecla] cancelar"
+                     [Enter] ou [y] confirmar   [Esc] ou [n] cancelar"
                 ),
             );
         }

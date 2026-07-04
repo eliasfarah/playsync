@@ -1,5 +1,47 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Bug real de UX na TUI: `Enter` nao confirmava o restore: RESOLVIDO (2026-07-04)
+
+Usuario testou o restore pela TUI (repetindo o teste manual, dessa vez com
+jogo real) e reportou "nao ta funcionando... o arquivo nem aparece". Depois
+de eu nao conseguir reproduzir via automacao de pty (sempre funcionava pra
+mim), o usuario esclareceu o que estava fazendo: apertava `Enter` na tela de
+"Confirmar", achando que confirmava (como em todo o resto da TUI — Enter
+sempre avanca). So que `Mode::Confirm` so aceitava `y`/`Y`; qualquer OUTRA
+tecla (incluindo Enter) caia no `_ => Mode::Table`, cancelando em silencio,
+sem nenhuma mensagem de erro. Parecia "nao fez nada" porque genuinamente nao
+fazia — nunca chegava a chamar `extract_over`.
+
+Usuario tambem apontou um segundo problema real: quando a pasta de save ao
+vivo nao e encontrada (fallback pro historico), o aviso disso so aparecia
+DEPOIS de already ter restaurado (no texto do resultado), sem chance de
+cancelar sabendo dessa informacao antes.
+
+**Fix (`tui.rs`):**
+1. `Mode::Confirm`: `Enter`/`y`/`Y` confirmam, `Esc`/`n`/`N` cancelam
+   explicitamente, qualquer outra tecla fica parada ali (nao cancela sem
+   querer) — em vez de "y confirma, QUALQUER COISA cancela".
+2. `Mode::Confirm` e `Mode::VersionChoice` ganham o campo `used_history`
+   (propagado desde `after_path_chosen`, que ja chama
+   `restore_candidate_paths`) — o aviso "⚠ pasta de save atual NAO
+   encontrada... alvo vem do historico" agora aparece ANTES de confirmar,
+   nas duas telas, nao so no resultado final.
+
+**Validado ao vivo via automacao de pty:** apagado o save real de novo,
+naveguei ate "Restaurar no jogo", tela de versoes mostrou o aviso de
+historico no titulo, tela de confirmacao mostrou o aviso completo + as
+instrucoes novas, apertei **Enter** (nao `y`) e desta vez confirmou de
+verdade — arquivo restaurado (8251680 bytes, confirmado com `ls`), nao mais
+o cancelamento silencioso de antes.
+
+**Nota de processo:** os binarios ficaram desatualizados por alguns minutos
+porque o usuario tinha uma sessao da TUI aberta segurando o arquivo
+`~/.local/bin/playsync` (`cp` falhou com "Text file busy") — pedi pra ele
+fechar antes de reinstalar. Se isso acontecer de novo, e so isso: nao e
+preciso `kill`, so fechar a sessao interativa do usuario.
+
+**Ainda nao commitado.**
+
 ## Duracao de sessao por versao + escolha de versao na TUI: RESOLVIDO (2026-07-04)
 
 Usuario perguntou duas coisas depois do versionamento: (1) a TUI deixa
