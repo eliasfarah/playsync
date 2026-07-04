@@ -206,38 +206,47 @@ async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool
         .find(|g| g.app_id == app_id)
         .with_context(|| format!("jogo com AppID {app_id} nao encontrado (veja `playsync status`)"))?;
 
-    if game.save_paths.is_empty() {
-        bail!("\"{}\" nao tem pasta de save conhecida", game.name);
+    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    if paths.is_empty() {
+        bail!(
+            "\"{}\" nao tem pasta de save conhecida (nem ao vivo, nem no historico de backups)",
+            game.name
+        );
+    }
+    if used_history {
+        println!(
+            "aviso: a pasta de save atual de \"{}\" nao foi encontrada no disco — usando o caminho do ultimo backup bem sucedido",
+            game.name
+        );
     }
 
     let idx = match path_index {
         Some(idx) => idx,
-        None if game.save_paths.len() == 1 => 0,
+        None if paths.len() == 1 => 0,
         None => {
             println!(
                 "\"{}\" tem {} pastas de save — escolha uma com --path-index:",
                 game.name,
-                game.save_paths.len()
+                paths.len()
             );
-            for (i, path) in game.save_paths.iter().enumerate() {
+            for (i, path) in paths.iter().enumerate() {
                 println!("  {i}: {}", path.display());
             }
             return Ok(());
         }
     };
-    let target = game
-        .save_paths
+    let target = paths
         .get(idx)
         .with_context(|| {
             format!(
                 "--path-index {idx} invalido — \"{}\" so tem {} pasta(s) de save",
                 game.name,
-                game.save_paths.len()
+                paths.len()
             )
         })?
         .clone();
 
-    let (sanitized, file_name) = actions::sanitized_and_file_name(&game, idx);
+    let (sanitized, file_name) = actions::sanitized_and_file_name(&game, idx, paths.len());
     let (source_label, bytes) = actions::fetch_backup_bytes(&source, &sanitized, &file_name).await?;
 
     println!(

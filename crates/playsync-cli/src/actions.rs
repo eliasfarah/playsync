@@ -28,12 +28,39 @@ pub fn parse_source(source: &str) -> Result<RestoreSource> {
     }
 }
 
+/// Caminhos candidatos pra restaurar: os detectados ao vivo
+/// (`GameSave::save_paths`), ou — se vazio, o cenario mais importante pra
+/// `restore` existir, quando o save sumiu de verdade do disco e a deteccao
+/// ao vivo nao acha mais nada — o ultimo caminho conhecido, gravado no
+/// historico na hora do ultimo backup bem sucedido. O segundo valor indica
+/// se veio do historico (pra avisar o usuario, ja que o caminho pode nao
+/// existir mais no disco de verdade).
+pub fn restore_candidate_paths(app_id: u32, live_paths: &[std::path::PathBuf]) -> (Vec<std::path::PathBuf>, bool) {
+    if !live_paths.is_empty() {
+        return (live_paths.to_vec(), false);
+    }
+    let Ok(history) = playsync_core::db::HistoryDb::open_default() else {
+        return (Vec::new(), false);
+    };
+    let fallback = history
+        .last_backup(app_id)
+        .ok()
+        .flatten()
+        .map(|entry| entry.source_paths)
+        .unwrap_or_default();
+    let used_history = !fallback.is_empty();
+    (fallback, used_history)
+}
+
 /// Nome sanitizado da pasta do jogo + nome do arquivo de zip pro `path_index`
 /// dado — a mesma formula usada por `playsyncd::sync` pra decidir onde cada
-/// save_path fica dentro de `PlaySync/<jogo>/`.
-pub fn sanitized_and_file_name(game: &GameSave, path_index: usize) -> (String, String) {
+/// save_path fica dentro de `PlaySync/<jogo>/`. `paths_len` e a quantidade de
+/// save_paths *usada no backup que estamos restaurando* — pode vir do
+/// historico (ver `restore_candidate_paths`), nao necessariamente de
+/// `game.save_paths` ao vivo, entao nao e so `game.save_paths.len()`.
+pub fn sanitized_and_file_name(game: &GameSave, path_index: usize, paths_len: usize) -> (String, String) {
     let sanitized = playsync_core::naming::sanitize(&game.name);
-    let file_name = if game.save_paths.len() > 1 {
+    let file_name = if paths_len > 1 {
         format!("save-{path_index}.zip")
     } else {
         "save.zip".to_string()

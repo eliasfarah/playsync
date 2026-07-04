@@ -1,5 +1,65 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Teste real "apagar save de verdade + restaurar" achou bug critico: RESOLVIDO (2026-07-04)
+
+Usuario pediu o teste mais realista possivel: pegar um jogo de verdade
+(escolheu DARK SOULS II: Scholar of the First Sin, appid 335300), fazer
+backup, apagar o save REAL da Steam (nao um backup do playsync, o arquivo de
+verdade que o jogo usa), e pedir pro `playsync restore` trazer de volta.
+
+**Protocolo de seguranca usado antes de apagar qualquer coisa real:** copia
+manual do arquivo real (`DS2SOFS0000.sl2`, 8.25MB) pro scratchpad + sha256,
+INDEPENDENTE do proprio playsync (nao confiar que o sistema que estamos
+testando vai funcionar antes de provar que funciona). So depois disso rodei
+`playsync sync --app-id 335300` (confirmado "Local + GoogleDrive sim",
+sha256 do arquivo dentro do `save.zip` local batendo com o arquivo real) e
+apaguei o arquivo de save de verdade.
+
+**Bug achado: `playsync restore` nao conseguia restaurar nada.** Erro:
+`"..." nao tem pasta de save conhecida`. Causa raiz: tanto `restore` (CLI)
+quanto o menu de acoes da TUI descobrem o "alvo" da restauracao chamando
+`discover_games()` — uma varredura AO VIVO do disco. Isso sempre exigiu que
+o caminho de save AINDA EXISTA pra ser "descoberto" (heuristica usa
+`.is_dir()`, e a resolucao do manifest da Ludusavi usa `glob()`, que so
+retorna o que existe). Ou seja: **restore nunca funcionou pro cenario mais
+importante pra ele existir** — save apagado/corrompido/sumido de verdade —
+porque a mesma logica usada pra "achar o que fazer backup" tambem decidia
+"pra onde restaurar", e as duas perguntas tem respostas diferentes quando o
+arquivo sumiu. Isso e um bug pre-existente (nao introduzido nesta sessao, a
+heuristica antiga tinha a mesma limitacao) que simplesmente nunca tinha sido
+testado dessa forma — sessoes anteriores sempre restauravam sobre uma pasta
+de save que AINDA EXISTIA (so o conteudo mudava) ou "apagavam" so o backup
+local do playsync (nao o save real) pra forcar um download.
+
+**Fix:** `BackupEntry` (`ipc.rs`) ganhou `source_paths: Vec<PathBuf>` — os
+`save_paths` detectados NO MOMENTO de cada backup bem sucedido, gravados no
+sqlite (`db.rs`, nova coluna `source_paths` TEXT/JSON, migracao idempotente
+via `ALTER TABLE ... ADD COLUMN` ignorando erro de coluna duplicada pra bancos
+ja existentes). `playsyncd/sync.rs::sync_one` preenche esse campo com
+`game.save_paths.clone()` a cada backup. Novo helper compartilhado
+`actions::restore_candidate_paths(app_id, live_paths)`: usa os `save_paths`
+ao vivo se existirem; se vazio, cai pro `source_paths` do ultimo backup bem
+sucedido no historico (e sinaliza isso pro usuario com um aviso, ja que o
+caminho pode nao existir mais de verdade). Usado tanto por `main.rs::restore`
+quanto por `tui.rs::choose_action`/`run_action` (antes duplicavam a logica
+`game.save_paths.is_empty()` cada um do seu jeito). `sanitized_and_file_name`
+mudou de assinatura (`paths_len: usize` explicito) pra nao depender de
+`game.save_paths.len()` quando os caminhos de verdade vieram do historico.
+
+**Validado ao vivo, de ponta a ponta, repetindo o teste com o fix:**
+rebuild release, reinstalado, daemon reiniciado, sync novo rodado (source_paths
+confirmado gravado no sqlite: `["/mnt/games/.../DS2SOFS0000.sl2"]`), arquivo
+real apagado de novo, `playsync restore --app-id 335300 --source local --yes`
+— mostrou o aviso "pasta de save atual nao encontrada... usando o caminho do
+ultimo backup", restaurou, sha256 do arquivo restaurado bateu EXATAMENTE com
+o original (`fdf13fd1...`), `playsync status` voltou a mostrar "em dia".
+Progresso real do usuario nunca ficou em risco: 2 copias de seguranca
+independentes existiram o tempo todo (a copia manual + o `save.zip` local/
+Drive ja verificado) antes de qualquer `rm` no arquivo de verdade.
+
+**Ainda nao commitado.**
+
+
 ## Release v0.2.0 publicado
 
 Usuario perguntou se o release ja tinha sido atualizado com tudo isso —

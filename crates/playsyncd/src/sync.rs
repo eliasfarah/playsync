@@ -157,6 +157,10 @@ impl SyncEngine {
             timestamp: Utc::now(),
             destination,
             success,
+            // Guarda onde o save estava agora, pro `restore` conseguir achar
+            // o alvo mesmo se ele sumir de verdade do disco depois (a
+            // deteccao ao vivo nao acha mais nada nesse caso).
+            source_paths: game.save_paths.clone(),
         }) {
             tracing::error!(%err, "falha ao gravar historico de backup");
         }

@@ -230,18 +230,22 @@ async fn choose_action(app_id: u32, action: GameAction, game_saves: &[GameSave])
         return Mode::Info(format!("sincronizacao de \"{}\" disparada", game.name));
     }
 
-    if game.save_paths.is_empty() {
-        return Mode::Info(format!("\"{}\" nao tem pasta de save conhecida", game.name));
+    let (paths, _) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    if paths.is_empty() {
+        return Mode::Info(format!(
+            "\"{}\" nao tem pasta de save conhecida (nem ao vivo, nem no historico de backups)",
+            game.name
+        ));
     }
 
-    if game.save_paths.len() == 1 {
+    if paths.len() == 1 {
         if is_destructive(action) {
             Mode::Confirm { app_id, action, path_index: 0 }
         } else {
             Mode::Info(run_action(app_id, action, 0, game_saves).await)
         }
     } else {
-        Mode::PathChoice { app_id, action, paths: game.save_paths.clone(), cursor: 0 }
+        Mode::PathChoice { app_id, action, paths, cursor: 0 }
     }
 }
 
@@ -251,10 +255,16 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return format!("jogo (AppID {app_id}) nao encontrado");
     };
-    let Some(target) = game.save_paths.get(path_index) else {
+    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let Some(target) = paths.get(path_index) else {
         return format!("indice de save invalido ({path_index})");
     };
-    let (sanitized, file_name) = actions::sanitized_and_file_name(game, path_index);
+    let (sanitized, file_name) = actions::sanitized_and_file_name(game, path_index, paths.len());
+    let warning = if used_history {
+        "aviso: pasta de save atual nao encontrada no disco, usando o caminho do ultimo backup — "
+    } else {
+        ""
+    };
 
     let outcome: Result<String> = async {
         match action {
@@ -287,7 +297,7 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, game_sav
     .await;
 
     match outcome {
-        Ok(msg) => msg,
+        Ok(msg) => format!("{warning}{msg}"),
         Err(err) => format!("Erro: {err}"),
     }
 }

@@ -67,6 +67,14 @@ pub struct BackupEntry {
     pub timestamp: DateTime<Utc>,
     pub destination: String,
     pub success: bool,
+    /// Os `save_paths` (na mesma ordem/indice usada pro nome do zip,
+    /// `save.zip` ou `save-{idx}.zip`) detectados NO MOMENTO desse backup.
+    /// Existe pra `restore` funcionar mesmo quando o save sumiu de verdade
+    /// do disco (o cenario mais importante pra restore existir!) — a
+    /// deteccao ao vivo (`discover_games`) nao acha mais nada nesse caso,
+    /// entao o restore cai pra "onde foi da ultima vez que fizemos backup".
+    #[serde(default)]
+    pub source_paths: Vec<PathBuf>,
 }
 
 /// Caminho do socket UDS usado para a comunicacao CLI <-> daemon.
