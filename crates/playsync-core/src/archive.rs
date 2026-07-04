@@ -1,9 +1,10 @@
-//! Compacta um save (arquivo ou diretorio inteiro, recursivamente) num .zip.
-//! Os backends de nuvem so sabem enviar arquivos unicos; a maioria dos saves
-//! reais e um diretorio (ex: prefixo Proton).
+//! Compacta um save (arquivo ou diretorio inteiro, recursivamente) num .zip,
+//! e o caminho inverso (restaurar). Os backends de nuvem so sabem enviar/
+//! receber arquivos unicos; a maioria dos saves reais e um diretorio (ex:
+//! prefixo Proton).
 
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -55,6 +56,42 @@ pub fn zip_path(source: &Path, dest: &Path) -> Result<()> {
     }
 
     writer.finish().context("falha ao finalizar o zip")?;
+    Ok(())
+}
+
+/// Extrai um .zip (bytes, tipicamente baixado da nuvem ou lido do backup
+/// local) dentro de `anchor` — o inverso de `zip_path`: como o zip foi criado
+/// ancorado no pai do save original, extrair em `anchor` recria a mesma
+/// estrutura (arquivo solto ou pasta com o mesmo nome) ali dentro.
+pub fn unzip_to(bytes: &[u8], anchor: &Path) -> Result<()> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).context("conteudo nao e um zip valido")?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).context("entrada corrompida no zip")?;
+        // `enclosed_name()` recusa entradas com `..`/caminho absoluto — protecao
+        // contra zip-slip (um zip malicioso escrevendo fora de `anchor`).
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        let dest = anchor.join(relative);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&dest)
+                .with_context(|| format!("nao consegui criar {}", dest.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("nao consegui criar {}", parent.display()))?;
+        }
+        let mut out = File::create(&dest)
+            .with_context(|| format!("nao consegui criar {}", dest.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .with_context(|| format!("falha ao escrever {}", dest.display()))?;
+    }
+
     Ok(())
 }
 
@@ -137,5 +174,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = Path::new("/nonexistent/playsync-test-path");
         assert!(zip_path(missing, &dir.path().join("out.zip")).is_err());
+    }
+
+    #[test]
+    fn roundtrips_a_directory_through_zip_and_unzip() {
+        let dir = tempfile::tempdir().unwrap();
+        let save_dir = dir.path().join("LocalLow");
+        std::fs::create_dir_all(save_dir.join("sub")).unwrap();
+        std::fs::write(save_dir.join("file1.txt"), b"a").unwrap();
+        std::fs::write(save_dir.join("sub").join("file2.txt"), b"b").unwrap();
+        let zip_dest = dir.path().join("out.zip");
+        zip_path(&save_dir, &zip_dest).unwrap();
+
+        let restore_dir = dir.path().join("restored");
+        std::fs::create_dir_all(&restore_dir).unwrap();
+        let bytes = std::fs::read(&zip_dest).unwrap();
+        unzip_to(&bytes, &restore_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(restore_dir.join("LocalLow").join("file1.txt")).unwrap(),
+            "a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(restore_dir.join("LocalLow").join("sub").join("file2.txt"))
+                .unwrap(),
+            "b"
+        );
+    }
+
+    #[test]
+    fn roundtrips_a_single_file_through_zip_and_unzip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("save.dat");
+        std::fs::write(&file, b"conteudo do save").unwrap();
+        let zip_dest = dir.path().join("out.zip");
+        zip_path(&file, &zip_dest).unwrap();
+
+        let restore_dir = dir.path().join("restored");
+        std::fs::create_dir_all(&restore_dir).unwrap();
+        let bytes = std::fs::read(&zip_dest).unwrap();
+        unzip_to(&bytes, &restore_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(restore_dir.join("save.dat")).unwrap(),
+            "conteudo do save"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_zip_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(unzip_to(b"nao e um zip", dir.path()).is_err());
     }
 }

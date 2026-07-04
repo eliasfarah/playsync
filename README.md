@@ -171,10 +171,35 @@ playsync history             # recent backup history (success/failure, destinati
 playsync history --limit N   # history with a custom limit (default: 20)
 playsync cloud connect <google-drive|box>      # (re)authorize a provider
 playsync cloud test-upload <google-drive|box>  # sanity-check the OAuth2 + upload pipeline
+playsync restore --app-id ID --source <local|google-drive|box>  # restore a backup over the current save
 ```
 
 Day to day, once set up, no command is needed — the daemon detects the game
 closing and syncs on its own after a debounce (5s by default, configurable).
+
+#### Restoring a backup
+
+```bash
+# a game with more than one save folder lists them (with an index) instead of restoring:
+playsync restore --app-id ID --source local
+
+# restore a specific one, from local or from a cloud provider:
+playsync restore --app-id ID --source local --path-index 0
+playsync restore --app-id ID --source google-drive --path-index 0
+playsync restore --app-id ID --source box --path-index 0
+
+# skip the confirmation prompt (e.g. scripting):
+playsync restore --app-id ID --source local --path-index 0 --yes
+```
+
+Restoring **overwrites the live save folder** with the backup's contents
+(the existing folder/file is removed first, then the backup is extracted in
+its place) — you'll be asked to confirm unless `--yes` is passed.
+
+> Only one copy is kept per save path: locally the zip is overwritten on
+> every sync, and in the cloud the same file is updated in place rather than
+> piling up duplicates. There's no "restore from 3 backups ago" yet — restore
+> always gets you the most recent backup for the chosen source.
 
 #### Optional configuration
 
@@ -379,11 +404,36 @@ playsync history             # historico recente de backups (sucesso/falha, dest
 playsync history --limit N   # historico com um limite customizado (padrao: 20)
 playsync cloud connect <google-drive|box>      # (re)autoriza um provedor
 playsync cloud test-upload <google-drive|box>  # valida o pipeline OAuth2 + upload
+playsync restore --app-id ID --source <local|google-drive|box>  # restaura um backup por cima do save atual
 ```
 
 No dia a dia, depois de configurado, nenhum comando é necessário — o daemon
 detecta o jogo fechando e sincroniza sozinho após um debounce (5s por
 padrão, configurável).
+
+#### Restaurando um backup
+
+```bash
+# um jogo com mais de uma pasta de save lista as opcoes (com indice) em vez de restaurar:
+playsync restore --app-id ID --source local
+
+# restaura uma especifica, do local ou de um provedor de nuvem:
+playsync restore --app-id ID --source local --path-index 0
+playsync restore --app-id ID --source google-drive --path-index 0
+playsync restore --app-id ID --source box --path-index 0
+
+# pula a confirmacao (ex: uso em script):
+playsync restore --app-id ID --source local --path-index 0 --yes
+```
+
+Restaurar **sobrescreve a pasta de save atual** com o conteudo do backup (a
+pasta/arquivo existente e apagado primeiro, depois o backup e extraido no
+lugar) — voce vai ser perguntado antes, a menos que passe `--yes`.
+
+> So uma copia e mantida por pasta de save: localmente o zip e sobrescrito a
+> cada sync, e na nuvem o mesmo arquivo e atualizado no lugar em vez de
+> acumular duplicatas. Ainda nao existe "restaurar de 3 backups atras" —
+> restaurar sempre pega o backup mais recente da origem escolhida.
 
 #### Configuração opcional
 

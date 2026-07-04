@@ -1,7 +1,7 @@
 mod ipc_client;
 mod tui;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use playsync_core::ipc::{CloudProvider, Request, Response, SyncStatus};
 
@@ -32,6 +32,23 @@ enum Command {
         #[command(subcommand)]
         action: CloudCommand,
     },
+    /// Restaura um backup (local ou da nuvem) de volta pra pasta de save do jogo.
+    Restore {
+        /// AppID do jogo (veja `playsync status`).
+        #[arg(long)]
+        app_id: u32,
+        /// De onde restaurar: "local", "google-drive" ou "box".
+        #[arg(long)]
+        source: String,
+        /// Qual pasta de save restaurar, quando o jogo tem mais de uma
+        /// (indice mostrado ao rodar sem essa opcao). Se o jogo so tem uma,
+        /// e opcional.
+        #[arg(long)]
+        path_index: Option<usize>,
+        /// Pula a confirmacao antes de sobrescrever o save atual.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -58,6 +75,9 @@ async fn main() -> Result<()> {
             CloudCommand::Connect { provider } => cloud_connect(&provider).await,
             CloudCommand::TestUpload { provider } => cloud_test_upload(&provider).await,
         },
+        Some(Command::Restore { app_id, source, path_index, yes }) => {
+            restore(app_id, &source, path_index, yes).await
+        }
     }
 }
 
@@ -162,4 +182,121 @@ fn parse_provider(provider: &str) -> Result<CloudProvider> {
         "box" => Ok(CloudProvider::Box),
         other => bail!("provedor desconhecido: {other} (use `google-drive` ou `box`)"),
     }
+}
+
+enum RestoreSource {
+    Local,
+    Cloud(CloudProvider),
+}
+
+fn parse_source(source: &str) -> Result<RestoreSource> {
+    match source {
+        "local" => Ok(RestoreSource::Local),
+        other => Ok(RestoreSource::Cloud(parse_provider(other)?)),
+    }
+}
+
+/// Restaura o backup de um `save_path` do jogo (local ou de um provedor de
+/// nuvem) por cima da pasta/arquivo de save atual. Fala diretamente com
+/// `playsync-core` (Steam, config, backend de nuvem) em vez de passar pelo
+/// daemon — mesmo padrao de `cloud connect`/`cloud test-upload`.
+async fn restore(app_id: u32, source: &str, path_index: Option<usize>, yes: bool) -> Result<()> {
+    let source = parse_source(source)?;
+
+    let games = playsync_core::steam::discover_games().context("falha ao listar jogos da Steam")?;
+    let game = games
+        .into_iter()
+        .find(|g| g.app_id == app_id)
+        .with_context(|| format!("jogo com AppID {app_id} nao encontrado (veja `playsync status`)"))?;
+
+    if game.save_paths.is_empty() {
+        bail!("\"{}\" nao tem pasta de save conhecida", game.name);
+    }
+
+    let idx = match path_index {
+        Some(idx) => idx,
+        None if game.save_paths.len() == 1 => 0,
+        None => {
+            println!(
+                "\"{}\" tem {} pastas de save — escolha uma com --path-index:",
+                game.name,
+                game.save_paths.len()
+            );
+            for (i, path) in game.save_paths.iter().enumerate() {
+                println!("  {i}: {}", path.display());
+            }
+            return Ok(());
+        }
+    };
+    let target = game
+        .save_paths
+        .get(idx)
+        .with_context(|| {
+            format!(
+                "--path-index {idx} invalido — \"{}\" so tem {} pasta(s) de save",
+                game.name,
+                game.save_paths.len()
+            )
+        })?
+        .clone();
+
+    let sanitized = playsync_core::naming::sanitize(&game.name);
+    let file_name = if game.save_paths.len() > 1 {
+        format!("save-{idx}.zip")
+    } else {
+        "save.zip".to_string()
+    };
+
+    let (source_label, bytes) = match &source {
+        RestoreSource::Local => {
+            let config = playsync_core::config::Config::load_or_default()?;
+            let path = config.local_backup_root()?.join(&sanitized).join(&file_name);
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("nao encontrei backup local em {}", path.display()))?;
+            ("local".to_string(), bytes)
+        }
+        RestoreSource::Cloud(provider) => {
+            let backend = playsync_core::cloud::backend_for(*provider);
+            if !backend.is_connected() {
+                bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
+            }
+            let remote_path = format!("PlaySync/{sanitized}/{file_name}");
+            let bytes = backend
+                .download(&remote_path)
+                .await
+                .with_context(|| format!("nao consegui baixar {remote_path}"))?;
+            (format!("{provider:?}"), bytes)
+        }
+    };
+
+    println!(
+        "Restaurar \"{}\" ({file_name}, backup {source_label}) vai APAGAR e sobrescrever:\n  {}",
+        game.name,
+        target.display()
+    );
+    if !yes {
+        print!("Continuar? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("cancelado");
+            return Ok(());
+        }
+    }
+
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target)
+            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
+    } else if target.exists() {
+        std::fs::remove_file(&target)
+            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
+    }
+
+    let anchor = target.parent().unwrap_or(&target);
+    playsync_core::archive::unzip_to(&bytes, anchor).context("falha ao extrair o backup")?;
+
+    println!("Restaurado com sucesso: {}", target.display());
+    Ok(())
 }

@@ -22,6 +22,10 @@ pub trait CloudBackend: Send + Sync {
     /// sao nomes de pasta, criados sob demanda se ainda nao existirem.
     async fn upload(&self, local_path: &Path, remote_path: &str) -> Result<()>;
 
+    /// Baixa o conteudo de `remote_path` (mesmo formato usado por `upload`).
+    /// Erra se o arquivo ou alguma pasta do caminho nao existir.
+    async fn download(&self, remote_path: &str) -> Result<Vec<u8>>;
+
     /// Verifica se ha um token valido salvo (i.e. `cloud connect` ja foi rodado).
     fn is_connected(&self) -> bool;
 }

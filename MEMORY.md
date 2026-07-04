@@ -129,6 +129,71 @@ pasta. Sao orfaos agora — o usuario pode apagar manualmente quando quiser.
 `uuid` removido do workspace (nao usado mais depois que `zip_path` parou de
 gerar nome aleatorio).
 
+## `playsync restore` + fim das duplicatas no Drive: RESOLVIDO (2026-07-04)
+
+Usuario pediu: comando pra restaurar um backup (local ou nuvem), escolhendo
+qual save (quando o jogo tem mais de uma pasta) e a origem.
+
+Antes de implementar, respondi a pergunta "quantos backups voces guarda,
+ultimos 3?" com a realidade do codigo (nao havia nenhum "ultimos N"):
+- **Local:** so 1 copia — `archive::zip_path` sempre sobrescrevia o mesmo
+  arquivo.
+- **Google Drive:** cada sync criava um arquivo NOVO (so `POST`, nunca
+  checava se ja existia) — crescimento sem limite, confirmado ao vivo (uma
+  sync anterior de TODOS os jogos, ver nota abaixo, deixou dezenas de
+  arquivos duplicados no Drive).
+- **Box:** ja tinha overwrite-como-nova-versao desde a implementacao
+  original (409 → `overwrite()`).
+
+Corrigido o gap do Drive como parte deste trabalho (nao só documentado):
+`gdrive.rs` ganhou `find_entry` (pasta OU arquivo, com `orderBy=createdTime
+desc` pra lidar com duplicatas ja existentes) e `upload()` agora faz `PATCH
+.../files/{id}` (update) quando ja existe um arquivo com esse nome, em vez de
+sempre `POST` (create). Confirmado ao vivo: rodar sync 2x seguidas manteve o
+mesmo `id` de arquivo, so `modifiedTime` mudou.
+
+**`CloudBackend` ganhou `download(remote_path) -> Vec<u8>`:**
+- Google Drive: `GET .../files/{id}?alt=media`, direto (sem redirect).
+- Box: `GET .../files/{id}/content` redireciona (302) pra
+  `dl.boxcloud.com` (URL pre-assinada, sem precisar do Authorization no
+  segundo hop) — como os clientes reqwest dos dois backends tem
+  `redirect::Policy::none()` (protecao SSRF original), o codigo segue esse
+  UM redirect na mao, validando que o host e `*.boxcloud.com` antes de
+  seguir.
+
+**`archive::zip_path` mudou de `(source) -> PathBuf`** (versao antiga, ja
+alterada numa sessao anterior) **continua `(source, dest)`**; adicionado
+`archive::unzip_to(bytes, anchor)` — o inverso, usa `enclosed_name()` do
+crate `zip` (protecao built-in contra zip-slip) e extrai ancorado no mesmo
+diretorio-pai usado ao compactar.
+
+**CLI:** `playsync restore --app-id ID --source <local|google-drive|box>
+[--path-index N] [--yes]`. Sem `--path-index` e o jogo tiver mais de uma
+pasta de save, lista as opcoes (indice + caminho) e para, em vez de adivinhar.
+Pede confirmacao antes de apagar a pasta/arquivo atual (a menos que `--yes`).
+Fala direto com `playsync-core` (Steam, config, cloud), sem passar pelo
+daemon/IPC — mesmo padrao de `cloud connect`.
+
+**Validado ao vivo, as 3 origens:** pra DARK SOULS II (appid 335300, 3
+save_paths), tirei um hash (`sha256sum` recursivo) da pasta `Roaming` antes
+de mexer, rodei `restore --source local`, depois `--source box`, depois
+`--source google-drive` (trocando `cloud_provider` no config pra sincronizar
+com cada um antes) — hash identico nas 3 vezes. Confirma tambem que o fix do
+redirect do Box e o fix de overwrite do Drive funcionam de ponta a ponta.
+
+**Achado a parte (nao e bug):** durante a validacao, o Drive mostrou pastas
+de VARIOS outros jogos (Forza Horizon 5, Returnal, Marvel's Spider-Man 2,
+etc.), nao so DARK SOULS II. Motivo: a TUI (`tui.rs`) tem uma tecla que manda
+`Request::SyncNow { app_id: None }` (sync de todos os jogos elegiveis) —
+alguem (eu ou o usuario) deve ter aberto a TUI e apertado essa tecla em algum
+momento anterior desta sessao. Comportamento esperado, so registrando pra nao
+confundir uma sessao futura.
+
+**Nota:** `cloud_provider` no `~/.config/playsync/config.toml` deste
+maquina ficou como `"google-drive"` ao final da validacao (estava `"box"`
+antes — troquei pra testar o restore dos dois provedores). Nao revertido de
+proposito, avisar o usuario.
+
 ## GitHub: RESOLVIDO (2026-07-04)
 
 Repo real: `git@github.com:eliasfarah/playsync.git`, branch `main` empurrada

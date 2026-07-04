@@ -159,38 +159,8 @@ impl GoogleDriveBackend {
     /// novo, mas isso e so uma chamada de API extra por nivel, aceitavel pro
     /// volume de um backup de saves.
     async fn ensure_folder(&self, access_token: &str, name: &str, parent: &str) -> Result<String> {
-        let escaped_name = name.replace('\\', "\\\\").replace('\'', "\\'");
-        let query = format!(
-            "name = '{escaped_name}' and '{parent}' in parents \
-             and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        );
-
-        let mut url = oauth2::url::Url::parse("https://www.googleapis.com/drive/v3/files")
-            .expect("URL estatica valida");
-        url.query_pairs_mut()
-            .append_pair("q", &query)
-            .append_pair("fields", "files(id)");
-
-        let response = self
-            .http
-            .get(url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .context("falha ao procurar pasta no Google Drive")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            bail!("Google Drive respondeu {status} ao procurar pasta \"{name}\": {text}");
-        }
-
-        let parsed: serde_json::Value = response
-            .json()
-            .await
-            .context("resposta do Google Drive nao veio no formato JSON esperado")?;
-        if let Some(id) = parsed["files"][0]["id"].as_str() {
-            return Ok(id.to_string());
+        if let Some(id) = self.find_entry(access_token, name, parent, true).await? {
+            return Ok(id);
         }
 
         let metadata = serde_json::json!({
@@ -222,6 +192,79 @@ impl GoogleDriveBackend {
             .map(str::to_string)
             .context("Google Drive nao devolveu o id da pasta criada")
     }
+
+    /// Acha o `id` de uma pasta ou arquivo chamado `name` dentro de `parent`.
+    /// Se houver mais de um resultado (ex: arquivos duplicados de uma versao
+    /// anterior do PlaySync, que sempre criava um novo em vez de atualizar),
+    /// usa o mais recente (`createdTime desc`).
+    async fn find_entry(
+        &self,
+        access_token: &str,
+        name: &str,
+        parent: &str,
+        is_folder: bool,
+    ) -> Result<Option<String>> {
+        let escaped_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+        let mime_clause = if is_folder {
+            "and mimeType = 'application/vnd.google-apps.folder' "
+        } else {
+            "and mimeType != 'application/vnd.google-apps.folder' "
+        };
+        let query = format!(
+            "name = '{escaped_name}' and '{parent}' in parents {mime_clause}and trashed = false"
+        );
+
+        let mut url = oauth2::url::Url::parse("https://www.googleapis.com/drive/v3/files")
+            .expect("URL estatica valida");
+        url.query_pairs_mut()
+            .append_pair("q", &query)
+            .append_pair("fields", "files(id)")
+            .append_pair("orderBy", "createdTime desc");
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("falha ao procurar no Google Drive")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao procurar \"{name}\": {text}");
+        }
+
+        let parsed: serde_json::Value = response
+            .json()
+            .await
+            .context("resposta do Google Drive nao veio no formato JSON esperado")?;
+        Ok(parsed["files"][0]["id"].as_str().map(str::to_string))
+    }
+
+    /// Resolve `remote_path` (`PlaySync/<jogo>/save.zip`) num `(parent_id,
+    /// file_name)`, sem criar nada — usado por `download`. Erra se qualquer
+    /// pasta no caminho nao existir.
+    async fn resolve_path<'a>(
+        &self,
+        access_token: &str,
+        remote_path: &'a str,
+    ) -> Result<(String, &'a str)> {
+        let mut segments = remote_path.split('/').filter(|s| !s.is_empty());
+        let file_name = segments
+            .next_back()
+            .context("remote_path vazio — sem nome de arquivo")?;
+
+        let mut parent = "root".to_string();
+        for folder_name in segments {
+            parent = self
+                .find_entry(access_token, folder_name, &parent, true)
+                .await?
+                .with_context(|| format!("pasta \"{folder_name}\" nao encontrada no Google Drive"))?;
+        }
+
+        Ok((parent, file_name))
+    }
 }
 
 impl Default for GoogleDriveBackend {
@@ -242,7 +285,9 @@ impl CloudBackend for GoogleDriveBackend {
     ///
     /// `remote_path` tipo `PlaySync/<jogo>/save.zip`: os segmentos antes do
     /// ultimo sao pastas, criadas (ou reaproveitadas, se ja existirem) antes
-    /// do upload em si.
+    /// do upload em si. Se ja existir um arquivo com esse nome na pasta,
+    /// atualiza o conteudo dele (`PATCH`) em vez de criar mais um — antes
+    /// disso cada sync criava um arquivo novo, acumulando duplicatas.
     async fn upload(&self, local_path: &Path, remote_path: &str) -> Result<()> {
         let access_token = self.access_token().await?;
 
@@ -260,13 +305,25 @@ impl CloudBackend for GoogleDriveBackend {
             .await
             .with_context(|| format!("nao consegui ler {}", local_path.display()))?;
 
-        let metadata =
-            serde_json::json!({ "name": file_name, "parents": [parent] }).to_string();
-        let body = build_multipart_body(&metadata, &bytes);
+        let existing = self.find_entry(&access_token, file_name, &parent, false).await?;
 
-        let response = self
-            .http
-            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+        let (url, metadata) = match &existing {
+            Some(file_id) => (
+                format!("https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=multipart"),
+                serde_json::json!({}).to_string(),
+            ),
+            None => (
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart".to_string(),
+                serde_json::json!({ "name": file_name, "parents": [parent] }).to_string(),
+            ),
+        };
+        let body = build_multipart_body(&metadata, &bytes);
+        let request = match &existing {
+            Some(_) => self.http.patch(url),
+            None => self.http.post(url),
+        };
+
+        let response = request
             .bearer_auth(access_token)
             .header(
                 reqwest::header::CONTENT_TYPE,
@@ -291,6 +348,44 @@ impl CloudBackend for GoogleDriveBackend {
         tracing::info!(file_id, remote_path, "upload para o Google Drive concluido");
 
         Ok(())
+    }
+
+    /// Baixa o conteudo de `remote_path`. Se houver mais de um arquivo com o
+    /// mesmo nome na pasta (duplicatas de antes do fix acima), usa o mais
+    /// recente.
+    async fn download(&self, remote_path: &str) -> Result<Vec<u8>> {
+        let access_token = self.access_token().await?;
+        let (parent, file_name) = self.resolve_path(&access_token, remote_path).await?;
+        let file_id = self
+            .find_entry(&access_token, file_name, &parent, false)
+            .await?
+            .with_context(|| format!("arquivo nao encontrado no Google Drive: {remote_path}"))?;
+
+        let mut url = oauth2::url::Url::parse(&format!(
+            "https://www.googleapis.com/drive/v3/files/{file_id}"
+        ))
+        .expect("URL valida");
+        url.query_pairs_mut().append_pair("alt", "media");
+
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .context("falha ao baixar o arquivo do Google Drive")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Google Drive respondeu {status} ao baixar {remote_path}: {text}");
+        }
+
+        Ok(response
+            .bytes()
+            .await
+            .context("falha ao ler o corpo da resposta do Google Drive")?
+            .to_vec())
     }
 
     fn is_connected(&self) -> bool {

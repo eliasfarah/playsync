@@ -192,6 +192,17 @@ impl BoxBackend {
         name: &str,
         parent_id: &str,
     ) -> Result<Option<String>> {
+        self.find_entry(access_token, name, parent_id, "folder").await
+    }
+
+    /// Acha o `id` de uma pasta ou arquivo chamado `name` dentro de `parent_id`.
+    async fn find_entry(
+        &self,
+        access_token: &str,
+        name: &str,
+        parent_id: &str,
+        entry_type: &str,
+    ) -> Result<Option<String>> {
         let mut url = oauth2::url::Url::parse(&format!(
             "https://api.box.com/2.0/folders/{parent_id}/items"
         ))
@@ -224,9 +235,33 @@ impl BoxBackend {
 
         Ok(entries
             .iter()
-            .find(|entry| entry["type"] == "folder" && entry["name"] == name)
+            .find(|entry| entry["type"] == entry_type && entry["name"] == name)
             .and_then(|entry| entry["id"].as_str())
             .map(str::to_string))
+    }
+
+    /// Resolve `remote_path` (`PlaySync/<jogo>/save.zip`) num `(parent_id,
+    /// file_name)`, sem criar nada — usado por `download`. Erra se qualquer
+    /// pasta no caminho nao existir.
+    async fn resolve_path<'a>(
+        &self,
+        access_token: &str,
+        remote_path: &'a str,
+    ) -> Result<(String, &'a str)> {
+        let mut segments = remote_path.split('/').filter(|s| !s.is_empty());
+        let file_name = segments
+            .next_back()
+            .context("remote_path vazio — sem nome de arquivo")?;
+
+        let mut parent = "0".to_string();
+        for folder_name in segments {
+            parent = self
+                .find_folder(access_token, folder_name, &parent)
+                .await?
+                .with_context(|| format!("pasta \"{folder_name}\" nao encontrada no Box"))?;
+        }
+
+        Ok((parent, file_name))
     }
 }
 
@@ -310,6 +345,75 @@ impl CloudBackend for BoxBackend {
         tracing::info!(file_id, remote_path, "upload para o Box concluido");
 
         Ok(())
+    }
+
+    /// Baixa o conteudo de `remote_path`. O endpoint de download do Box
+    /// responde com um 302 pra `dl.boxcloud.com` (URL pre-assinada, sem
+    /// precisar do Authorization nessa segunda chamada) — como o cliente
+    /// HTTP do backend nao segue redirect (protecao contra SSRF), seguimos
+    /// esse unico hop na mao, e so pra esse host especifico.
+    async fn download(&self, remote_path: &str) -> Result<Vec<u8>> {
+        let access_token = self.access_token().await?;
+        let (parent, file_name) = self.resolve_path(&access_token, remote_path).await?;
+        let file_id = self
+            .find_entry(&access_token, file_name, &parent, "file")
+            .await?
+            .with_context(|| format!("arquivo nao encontrado no Box: {remote_path}"))?;
+
+        let response = self
+            .http
+            .get(format!("https://api.box.com/2.0/files/{file_id}/content"))
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .context("falha ao baixar o arquivo do Box")?;
+
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .context("Box respondeu redirect sem header Location")?
+                .to_str()
+                .context("header Location do Box nao e ASCII valido")?
+                .to_string();
+
+            let host = oauth2::url::Url::parse(&location)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default();
+            anyhow::ensure!(
+                host == "dl.boxcloud.com" || host.ends_with(".boxcloud.com"),
+                "redirect de download do Box apontou pra um host inesperado: {host}"
+            );
+
+            let download = self
+                .http
+                .get(&location)
+                .send()
+                .await
+                .context("falha ao seguir o redirect de download do Box")?;
+            let download_status = download.status();
+            if !download_status.is_success() {
+                bail!("boxcloud.com respondeu {download_status} ao baixar {remote_path}");
+            }
+            return Ok(download
+                .bytes()
+                .await
+                .context("falha ao ler o corpo da resposta de dl.boxcloud.com")?
+                .to_vec());
+        }
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            bail!("Box respondeu {status} ao baixar {remote_path}: {text}");
+        }
+
+        Ok(response
+            .bytes()
+            .await
+            .context("falha ao ler o corpo da resposta do Box")?
+            .to_vec())
     }
 
     fn is_connected(&self) -> bool {
