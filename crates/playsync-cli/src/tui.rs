@@ -467,24 +467,33 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
             let title = game_title(games, *app_id);
             let label = ACTIONS.iter().find(|(a, _)| *a == *action).map(|(_, l)| *l).unwrap_or("?");
             let history_warning = if *used_history {
-                "\n⚠ A pasta de save atual NAO foi encontrada no disco — o alvo abaixo\n\
-                 e o caminho do ultimo backup bem sucedido (pode nao ser mais valido).\n"
+                "\n⚠ pasta de save atual NAO encontrada — alvo vem do historico (pode nao ser mais valido)\n"
             } else {
                 ""
             };
+            // Os comandos ficam no TITULO (nunca corta, e desenhado direto na
+            // borda) alem do corpo — o corpo sozinho pode estourar a altura
+            // fixa do popup (ex: com o aviso de historico) e cortar a ultima
+            // linha sem avisar, foi exatamente o bug que o usuario achou.
             draw_message_popup(
                 frame,
-                " Confirmar ",
+                " Confirmar — [Enter]/[y] confirmar  [Esc]/[n] cancelar ",
                 &format!(
                     "{title}\n\n{label}\n\nVersao: {file_name}\n\
                      {history_warning}\n\
                      Isso vai APAGAR o save atual do jogo.\n\n\
                      [Enter] ou [y] confirmar   [Esc] ou [n] cancelar"
                 ),
+                45,
             );
         }
         Mode::Info(message) => {
-            draw_message_popup(frame, " PlaySync ", &format!("{message}\n\n(qualquer tecla continua)"));
+            draw_message_popup(
+                frame,
+                " PlaySync — [qualquer tecla] continuar ",
+                &format!("{message}\n\n(qualquer tecla continua)"),
+                30,
+            );
         }
     }
 }
@@ -554,8 +563,13 @@ fn draw_menu_popup(frame: &mut Frame, title: &str, items: Vec<ListItem>, cursor:
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_message_popup(frame: &mut Frame, title: &str, message: &str) {
-    let area = centered_rect(60, 30, frame.area());
+/// `height_percent` deve ser generoso o bastante pro `message` inteiro caber
+/// sem cortar — o `Paragraph` com `Wrap` nao rola sozinho, se o texto for
+/// mais alto que a area ele so corta em silencio (foi assim que o aviso de
+/// historico no `Confirm` acabou escondendo a linha de comandos). Os
+/// comandos tambem ficam no `title` (nunca corta) como reforco.
+fn draw_message_popup(frame: &mut Frame, title: &str, message: &str, height_percent: u16) {
+    let area = centered_rect(70, height_percent, frame.area());
     frame.render_widget(Clear, area);
 
     let paragraph = Paragraph::new(message.to_string())

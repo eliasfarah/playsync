@@ -1,5 +1,34 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Popup de confirmacao cortava a linha dos comandos: RESOLVIDO (2026-07-04)
+
+Logo depois do fix do `Enter`/`y` (secao acima), usuario testou de novo e
+reportou que a tela de confirmar apareceu SEM a opcao `[y]`/`[Enter]`
+escrita nela. Causa: o aviso novo de "pasta de save nao encontrada,
+usando o historico" que acabei de adicionar ao CORPO do popup de
+`Confirm` tornou o texto mais alto do que a caixa fixa (`centered_rect(60,
+30)` — 30% da altura do terminal). `Paragraph`+`Wrap` do ratatui nao rola
+sozinho: se o texto e mais alto que a area, ele so CORTA em silencio, sem
+erro nem indicacao — a ultima linha (justamente "[Enter] confirmar [Esc]
+cancelar") sumia. So acontecia quando `used_history` era `true` (o caso
+mais comum agora, testando com o save apagado de proposito).
+
+**Fix:** os comandos agora ficam tambem no **titulo** do popup (`"
+Confirmar — [Enter]/[y] confirmar [Esc]/[n] cancelar "`) — o titulo e
+desenhado direto na borda do `Block`, nunca corta, ao contrario do corpo.
+`draw_message_popup` ganhou um parametro `height_percent` (Confirm usa 45%
+em vez do 30% generico; popup tambem alargado de 60% pra 70% de largura)
+como reforco, mas a garantia de verdade e o titulo. Mesmo padrao aplicado
+ao popup de `Info` (titulo agora diz "[qualquer tecla] continuar").
+
+**Validado ao vivo:** apagado o save de novo, testado num terminal **de
+verdade pequeno** (24 linhas, mais realista que os 40 usados nos testes
+anteriores) via automacao de pty — o titulo mostrou os comandos
+completos mesmo com o corpo cortado, `Enter` confirmou, arquivo restaurado
+(8251680 bytes, confirmado).
+
+**Ainda nao commitado.**
+
 ## Bug real de UX na TUI: `Enter` nao confirmava o restore: RESOLVIDO (2026-07-04)
 
 Usuario testou o restore pela TUI (repetindo o teste manual, dessa vez com
