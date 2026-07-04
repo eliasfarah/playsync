@@ -1,5 +1,14 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Release v0.3.0 publicado
+
+Empurrados os 3 commits desta sessao (manifest da Ludusavi, fix do restore,
+versionamento de backups) pro GitHub, versao subida pra `0.3.0` (minor bump,
+mesmo criterio das vezes anteriores: features novas de verdade). Tag
+`v0.3.0` criada/empurrada, release publicado com tarball + `.deb` novos
+(binarios rebuilded, testes rodados antes).
+https://github.com/eliasfarah/playsync/releases/tag/v0.3.0
+
 ## Versionamento de backups (protege contra sync automatico ruim): RESOLVIDO (2026-07-04)
 
 Depois do teste real de apagar+restaurar (secao acima), o usuario reproduziu
