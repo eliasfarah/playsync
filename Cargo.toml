@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["PlaySync contributors"]
-repository = "https://github.com/yourname/playsync"
+repository = "https://github.com/eliasfarah/playsync"
 rust-version = "1.81"
 
 # Versões centralizadas: cada crate do workspace referencia

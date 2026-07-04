@@ -1,6 +1,6 @@
 [Unit]
 Description=PlaySync daemon — sincroniza saves de jogos Steam com a nuvem
-Documentation=https://github.com/yourname/playsync
+Documentation=https://github.com/eliasfarah/playsync
 
 [Service]
 Type=simple
