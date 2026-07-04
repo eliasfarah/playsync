@@ -1,5 +1,33 @@
 # PlaySync — estado da sessão (2026-07-04)
 
+## Pendente pra proxima sessao (pedido pelo usuario, 2026-07-04)
+
+1. **Multi-idioma.** CLI/TUI hoje sao 100% em portugues, sem nenhuma
+   estrutura de i18n (strings direto no codigo). Precisa decidir estrategia
+   (crate tipo `fluent`/`rust-i18n`, arquivos de traducao, deteccao de
+   idioma via env/config) antes de implementar.
+2. **Box: usuario nao deveria precisar criar conta de developer.** Hoje
+   tanto Google Drive quanto Box exigem o usuario criar seu proprio app
+   OAuth (Google Cloud Console / Box Developer Console) e colar
+   client_id/client_secret em `~/.config/playsync/*_client_secret.json`
+   antes de conectar (documentado no README, secoes "Initial setup" /
+   "Configuração inicial"). Usuario quer que isso deixe de ser necessario,
+   pelo menos pro Box — ou seja, o PlaySync ter suas PROPRIAS credenciais
+   OAuth registradas (uma unica "app PlaySync" no Box, compartilhada por
+   todo mundo que instala), no lugar de cada usuario registrar a dele.
+   **Ressalva a discutir antes de implementar:** o app Box atual e do tipo
+   "confidencial" (tem `client_secret` de verdade, nao so PKCE) — embutir
+   esse secret num binario distribuido publicamente tem risco de
+   seguranca real (secret extraivel do binario). Precisa decidir entre
+   aceitar esse risco (comum em apps desktop pequenos), ver se o Box tem
+   um tipo de app "publico"/so-PKCE (como o Google recomenda hoje pra
+   Desktop apps), ou montar um proxy/backend so pra essa troca de token
+   sem expor o secret no cliente. Google Drive ja usa Desktop app (secret
+   "publico" por design da Google, risco bem menor) — pode servir de
+   modelo se o Box tiver algo equivalente.
+
+## Estado ao encerrar a sessao (2026-07-04)
+
 ## Popup de confirmacao cortava a linha dos comandos: RESOLVIDO (2026-07-04)
 
 Logo depois do fix do `Enter`/`y` (secao acima), usuario testou de novo e
