@@ -2,6 +2,7 @@ cli:
   status:
     header_game: "ゲーム"
     header_last_backup: "最終バックアップ"
+    header_size: "サイズ"
     header_status: "状態"
     no_save_detected: "⚠ セーブデータが見つかりません（config.toml の extra_save_paths を確認してください）"
     never_synced: "未同期"
@@ -83,6 +84,7 @@ tui:
   table:
     header_game: "ゲーム"
     header_last_backup: "最終バックアップ"
+    header_size: "サイズ"
     header_status: "状態"
     no_save_detected: "⚠ セーブデータが見つかりません"
     title: " PlaySync — [↑↓] 移動  [Enter] 操作  [s] 全て同期  [r] 更新  [q] 終了  [c] 設定 "

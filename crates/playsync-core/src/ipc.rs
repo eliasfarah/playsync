@@ -49,6 +49,10 @@ pub struct GameStatus {
     /// porque nao acha onde o save fica" (o jogo pode guardar save num
     /// lugar fora do convencional; ver `extra_save_paths` no config.toml).
     pub has_save_paths: bool,
+    /// Soma do tamanho (bytes) de todos os `save_paths` do jogo, ao vivo no
+    /// disco agora — `None` sem save detectado ou se o caminho sumiu.
+    #[serde(default)]
+    pub save_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

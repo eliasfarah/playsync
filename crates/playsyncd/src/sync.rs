@@ -349,12 +349,18 @@ impl SyncEngine {
                     .ok()
                     .flatten()
                     .map(|e| e.timestamp);
+                let save_size_bytes = if g.save_paths.is_empty() {
+                    None
+                } else {
+                    Some(g.save_paths.iter().filter_map(|p| archive::path_size_bytes(p)).sum())
+                };
                 GameStatus {
                     app_id: g.app_id,
                     name: g.name,
                     last_backup,
                     sync_status: status.get(&g.app_id).cloned().unwrap_or(SyncStatus::NeverSynced),
                     has_save_paths: !g.save_paths.is_empty(),
+                    save_size_bytes,
                 }
             })
             .collect()

@@ -2,6 +2,7 @@ cli:
   status:
     header_game: "ИГРА"
     header_last_backup: "ПОСЛЕДНЯЯ КОПИЯ"
+    header_size: "РАЗМЕР"
     header_status: "СТАТУС"
     no_save_detected: "⚠ сохранение не обнаружено (см. extra_save_paths в config.toml)"
     never_synced: "никогда не синхронизировалось"
@@ -83,6 +84,7 @@ tui:
   table:
     header_game: "Игра"
     header_last_backup: "Последняя копия"
+    header_size: "Размер"
     header_status: "Статус"
     no_save_detected: "⚠ сохранение не обнаружено"
     title: " PlaySync — [↑↓] навигация  [Enter] действия  [s] синхр. всё  [r] обновить  [q] выход  [c] настройки "

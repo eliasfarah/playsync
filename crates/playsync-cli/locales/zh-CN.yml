@@ -2,6 +2,7 @@ cli:
   status:
     header_game: "游戏"
     header_last_backup: "上次备份"
+    header_size: "大小"
     header_status: "状态"
     no_save_detected: "⚠ 未检测到存档（请查看 config.toml 中的 extra_save_paths）"
     never_synced: "从未同步"
@@ -83,6 +84,7 @@ tui:
   table:
     header_game: "游戏"
     header_last_backup: "上次备份"
+    header_size: "大小"
     header_status: "状态"
     no_save_detected: "⚠ 未检测到存档"
     title: " PlaySync — [↑↓] 移动  [Enter] 操作  [s] 全部同步  [r] 刷新  [q] 退出  [c] 设置 "

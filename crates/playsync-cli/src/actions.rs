@@ -104,6 +104,10 @@ pub enum SessionInfo {
 pub struct VersionInfo {
     pub file_name: String,
     pub session: SessionInfo,
+    /// Horario (UTC) embutido no nome do arquivo, se reconhecivel (`None`
+    /// pra nomenclatura antiga, sem timestamp) — `format_version_label`
+    /// converte pro horario local na hora de exibir.
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Mesma lista de `list_versions`, mas com a sessao que gerou cada versao
@@ -134,7 +138,8 @@ pub async fn list_versions_with_info(
             // vem do mesmo `sync_one`, a poucos milissegundos um do outro —
             // 5s de tolerancia cobre isso com folga sem risco de casar com o
             // sync errado de um jogo que sincroniza com frequencia.
-            let session = playsync_core::versions::parse_version_timestamp(&file_name, &prefix)
+            let timestamp = playsync_core::versions::parse_version_timestamp(&file_name, &prefix);
+            let session = timestamp
                 .and_then(|ts| {
                     history_entries
                         .iter()
@@ -146,18 +151,24 @@ pub async fn list_versions_with_info(
                     None => SessionInfo::Manual,
                 })
                 .unwrap_or(SessionInfo::Unknown);
-            VersionInfo { file_name, session }
+            VersionInfo { file_name, session, timestamp }
         })
         .collect())
 }
 
-/// Rotulo pronto pra exibir ao lado do nome do arquivo, com aviso se a
+/// Rotulo pronto pra exibir ao lado do nome do arquivo: data/hora LOCAL (nao
+/// UTC — o nome do arquivo grava UTC pra ordenar/comparar direito, mas isso
+/// nao e o que faz sentido mostrar pro usuario) do save, mais um aviso se a
 /// sessao foi mais curta que `short_session_warning_secs` (config) — sinal
 /// tipico de "abri o jogo sem save, so testei, fechei", nao progresso real.
 pub fn format_version_label(info: &VersionInfo, short_session_warning_secs: i64) -> String {
-    match info.session {
-        SessionInfo::Unknown => info.file_name.clone(),
-        SessionInfo::Manual => format!("{}{}", info.file_name, t!("cli.restore.label_manual")),
+    let date_prefix = info
+        .timestamp
+        .map(|ts| format!("{} — ", ts.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")));
+
+    let suffix = match info.session {
+        SessionInfo::Unknown => String::new(),
+        SessionInfo::Manual => t!("cli.restore.label_manual").to_string(),
         SessionInfo::Session { duration_secs } => {
             let duration_secs = duration_secs.max(0);
             let label = if duration_secs >= 60 {
@@ -166,12 +177,14 @@ pub fn format_version_label(info: &VersionInfo, short_session_warning_secs: i64)
                 t!("cli.restore.unit_sec", n = duration_secs).to_string()
             };
             if duration_secs < short_session_warning_secs {
-                format!("{}{}", info.file_name, t!("cli.restore.label_short_session", label = label))
+                t!("cli.restore.label_short_session", label = label).to_string()
             } else {
-                format!("{}{}", info.file_name, t!("cli.restore.label_session", label = label))
+                t!("cli.restore.label_session", label = label).to_string()
             }
         }
-    }
+    };
+
+    format!("{}{}{suffix}", date_prefix.unwrap_or_default(), info.file_name)
 }
 
 /// Escolhe qual versao usar: `explicit` (nome exato, de `--version` ou do

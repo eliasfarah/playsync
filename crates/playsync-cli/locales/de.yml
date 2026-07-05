@@ -2,6 +2,7 @@ cli:
   status:
     header_game: "SPIEL"
     header_last_backup: "LETZTES BACKUP"
+    header_size: "GRÖSSE"
     header_status: "STATUS"
     no_save_detected: "⚠ kein Spielstand erkannt (siehe extra_save_paths in config.toml)"
     never_synced: "nie synchronisiert"
@@ -83,6 +84,7 @@ tui:
   table:
     header_game: "Spiel"
     header_last_backup: "Letztes Backup"
+    header_size: "Größe"
     header_status: "Status"
     no_save_detected: "⚠ kein Spielstand erkannt"
     title: " PlaySync — [↑↓] navigieren  [Enter] Aktionen  [s] alles synchronisieren  [r] aktualisieren  [q] beenden  [c] Einstellungen "

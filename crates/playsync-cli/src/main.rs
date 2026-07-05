@@ -135,9 +135,10 @@ async fn print_status() -> Result<()> {
     };
 
     println!(
-        "{:<40} {:<20} {}",
+        "{:<40} {:<20} {:<10} {}",
         t!("cli.status.header_game"),
         t!("cli.status.header_last_backup"),
+        t!("cli.status.header_size"),
         t!("cli.status.header_status"),
     );
     for game in games {
@@ -155,7 +156,11 @@ async fn print_status() -> Result<()> {
             .last_backup
             .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| t!("cli.status.none").to_string());
-        println!("{:<40} {:<20} {}", game.name, last_backup, status);
+        let size = game
+            .save_size_bytes
+            .map(playsync_core::archive::format_size_bytes)
+            .unwrap_or_else(|| t!("cli.status.none").to_string());
+        println!("{:<40} {:<20} {:<10} {}", game.name, last_backup, size, status);
     }
     Ok(())
 }

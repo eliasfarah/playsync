@@ -1,5 +1,52 @@
 # PlaySync — estado da sessão (2026-07-05)
 
+## Coluna de tamanho do save na lista de jogos: RESOLVIDO (2026-07-05)
+
+Pedido do usuario depois de ver a lista de jogos (CLI `status` e tabela da
+TUI): mostrar o tamanho do save, se existir. `GameStatus` (ipc.rs) ganhou
+`save_size_bytes: Option<u64>` (`#[serde(default)]` pra compatibilidade),
+calculado em `SyncEngine::status_snapshot` (playsyncd/sync.rs) somando os
+bytes de todos os `save_paths` do jogo (`None` sem save detectado).
+
+**`playsync-core/src/archive.rs` ganhou duas funcoes novas:**
+`path_size_bytes(path)` (arquivo unico via `metadata().len()`, diretorio via
+`walkdir` somando so arquivos, `None` se o caminho nao existir) e
+`format_size_bytes(bytes)` (unidades binarias, `"8.3 MB"`/`"120 KB"`/`"512
+B"`, mesmo estilo que ferramentas de disco mostram — sem localizar separador
+decimal por regiao, consistente com os timestamps do resto do app que
+tambem nao sao localizados). 4 testes unitarios novos.
+
+CLI (`main.rs`) e TUI (`tui.rs`) ganharam a coluna nova (`TAMANHO`/`Size`/
+etc., chave `header_size` adicionada nos 8 arquivos de locale) entre
+"ultimo backup" e "status"; larguras da tabela da TUI ajustadas (40/20/15/25%
+em vez de 50/25/25%).
+
+**Validado ao vivo:** rebuild release, reinstalado, daemon reiniciado,
+`playsync status` mostrou `7.9 MB` pro DARK SOULS II (bate com o tamanho real
+do arquivo `.sl2`, ~8.25MB = 8251680 bytes / 1024²), `55.3 MB` pro ELDEN RING,
+e `-` pros jogos sem save detectado (ex: "The Surge 2").
+
+## Horario local + data nas versoes de restore: RESOLVIDO (2026-07-05)
+
+Pedido do usuario: tanto `restore --list-versions` (CLI) quanto o seletor de
+versao da TUI so mostravam a duracao da sessao (`(sessao de 42min)` etc.) —
+a unica "data" visivel era o timestamp UTC cru embutido no NOME do arquivo
+(`save-20260705T145702Z.zip`), nem formatado nem no fuso do usuario.
+
+`VersionInfo` (`playsync-cli/src/actions.rs`) ganhou `timestamp:
+Option<DateTime<Utc>>` (capturado de `versions::parse_version_timestamp`,
+que ja rodava internamente em `list_versions_with_info` so pra correlacionar
+com o historico — antes o valor era descartado depois de usado, agora fica
+guardado). `format_version_label` converte pro fuso LOCAL
+(`.with_timezone(&chrono::Local)`) e formata `%Y-%m-%d %H:%M`, prefixando o
+rotulo (nome do arquivo + sufixo de duracao continuam do jeito que estavam,
+pro `--version <nome>` da CLI continuar funcionando com o nome exato).
+
+**Validado ao vivo:** `playsync restore --app-id 335300 --source local
+--list-versions` (maquina em UTC-3 no momento) mostrou `2026-07-05 11:53 —
+save-20260705T145334Z.zip (manual)` pro arquivo cujo timestamp embutido e
+`14:53:34Z` — `14:53 - 3h = 11:53`, conversao correta confirmada na hora.
+
 ## Multi-idioma (i18n) na CLI/TUI: RESOLVIDO (2026-07-05)
 
 Primeiro item da lista "Pendente pra proxima sessao" (secao abaixo, de
@@ -141,20 +188,38 @@ revertido ao final (idioma volta a auto-detectar do `LANG` real do sistema,
 `pt_BR.UTF-8` -> pt-BR; `auto_restore_on_launch` removido, volta a seguir o
 default dinamico).
 
-## Pendente pra proxima sessao (atualizado 2026-07-05)
+## Pendente pra proxima sessao (atualizado 2026-07-05, fim da sessao)
 
-Restou so o segundo item da lista antiga: **Box sem exigir conta de
-developer propria** (ver secao original abaixo, "Estado ao encerrar a sessao
-(2026-07-04)" — ainda com a ressalva de seguranca do `client_secret`
-confidencial por resolver antes de implementar).
+1. **Box sem exigir conta de developer propria** (item antigo, ver secao
+   "Estado ao encerrar a sessao (2026-07-04)" — ainda com a ressalva de
+   seguranca do `client_secret` confidencial por resolver antes de
+   implementar). Pesquisa nesta sessao confirmou que nem o rclone (usado
+   pelo Ludusavi) escapa disso mais — o Box fechou o truque de secret
+   compartilhado que o rclone usava, entao hoje ate o rclone pede credenciais
+   proprias do usuario pro Box. Sem novidade que mude a decisao aqui.
 
-**Ainda nao commitado** (i18n + auto-restore + tela de configuracoes, 3
-funcionalidades desta sessao) — `git status` mostra `Cargo.lock`,
-`crates/playsync-cli/Cargo.toml`, `crates/playsync-cli/src/{actions,
-ipc_client,main,tui}.rs`, `crates/playsync-core/src/config.rs`,
-`crates/playsyncd/src/{main,sync}.rs` modificados, e
-`crates/playsync-cli/locales/` + `crates/playsync-cli/src/i18n.rs` novos.
-README atualizado (EN+PT-BR) com os novos comandos/opcoes.
+2. **Google Drive: usuario tambem nao deveria precisar criar projeto no
+   Google Cloud** (item NOVO, levantado pelo usuario ao ler o README:
+   "isso nao faz sentido"). Diferença do caso do Box: o Google *permite*
+   secret de app tipo "Desktop app" ser compartilhado publicamente (nao e
+   tratado como confidencial de verdade, mesmo modelo que o rclone usa pra
+   varios provedores) — entao embutir credenciais PROPRIAS do PlaySync
+   (client_id/secret de um projeto Google Cloud do mantenedor, ja existe um
+   de teste, `playsync-501400`) e tecnicamente viavel e de baixo risco de
+   seguranca. A ressalva aqui NAO e seguranca, e o app virar "compartilhado
+   por todo mundo que instala" (cota de API dividida entre todos os
+   usuarios) e a possibilidade do Google mostrar tela de "app nao
+   verificado" pros usuarios finais a menos que o mantenedor passe pelo
+   processo de verificacao do Google (exige politica de privacidade,
+   dominio proprio, etc.) — perguntei ao usuario como prosseguir, pergunta
+   ainda EM ABERTO (nao respondida ate o fim desta sessao).
+
+**Commitado e empurrado pro GitHub** (`git push`, 2026-07-05): commit
+`35b11f7` (i18n + auto-restore + tela de configuracoes + creditos ao
+Ludusavi no README) mais um segundo commit desta mesma sessao com a coluna
+de tamanho do save e o horario local nas versoes de restore (ver secoes
+acima). Nao publicado como release ainda (sem tag nova nem binarios/`.deb`
+atualizados no GitHub) — so codigo no branch `main`.
 
 
 

@@ -95,6 +95,44 @@ pub fn unzip_to(bytes: &[u8], anchor: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Soma o tamanho em bytes de `path` (arquivo unico ou diretorio inteiro,
+/// recursivamente) — so pra exibir "tamanho do save" na CLI/TUI, sem
+/// precisar compactar nada. `None` se o caminho nao existir (mais) no disco.
+pub fn path_size_bytes(path: &Path) -> Option<u64> {
+    if path.is_file() {
+        return path.metadata().ok().map(|m| m.len());
+    }
+    if !path.is_dir() {
+        return None;
+    }
+    Some(
+        walkdir::WalkDir::new(path)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum(),
+    )
+}
+
+/// Formata bytes de forma legivel (`8.3 MB`, `120 KB`, `512 B`) — unidades
+/// binarias (1024), igual ao que a maioria das ferramentas de disco mostra.
+pub fn format_size_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
 fn add_file(
     writer: &mut ZipWriter<File>,
     path: &Path,
@@ -225,5 +263,36 @@ mod tests {
     fn rejects_invalid_zip_bytes() {
         let dir = tempfile::tempdir().unwrap();
         assert!(unzip_to(b"nao e um zip", dir.path()).is_err());
+    }
+
+    #[test]
+    fn path_size_bytes_sums_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("save.dat");
+        std::fs::write(&file, b"12345").unwrap();
+        assert_eq!(path_size_bytes(&file), Some(5));
+    }
+
+    #[test]
+    fn path_size_bytes_sums_directory_recursively() {
+        let dir = tempfile::tempdir().unwrap();
+        let save_dir = dir.path().join("LocalLow");
+        std::fs::create_dir_all(save_dir.join("sub")).unwrap();
+        std::fs::write(save_dir.join("file1.txt"), b"abc").unwrap();
+        std::fs::write(save_dir.join("sub").join("file2.txt"), b"defgh").unwrap();
+        assert_eq!(path_size_bytes(&save_dir), Some(8));
+    }
+
+    #[test]
+    fn path_size_bytes_none_for_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(path_size_bytes(&dir.path().join("nao-existe")), None);
+    }
+
+    #[test]
+    fn format_size_bytes_picks_the_right_unit() {
+        assert_eq!(format_size_bytes(512), "512 B");
+        assert_eq!(format_size_bytes(2048), "2.0 KB");
+        assert_eq!(format_size_bytes(8_700_000), "8.3 MB");
     }
 }

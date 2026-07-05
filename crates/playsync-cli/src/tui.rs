@@ -597,7 +597,11 @@ fn draw_table(frame: &mut Frame, games: &[GameStatus], selected: usize) {
             .last_backup
             .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| t!("cli.status.none").to_string());
-        let row = Row::new(vec![g.name.clone(), last_backup, status.to_string()]);
+        let size = g
+            .save_size_bytes
+            .map(playsync_core::archive::format_size_bytes)
+            .unwrap_or_else(|| t!("cli.status.none").to_string());
+        let row = Row::new(vec![g.name.clone(), last_backup, size, status.to_string()]);
         if i == selected {
             row.style(Style::new().add_modifier(Modifier::REVERSED))
         } else {
@@ -606,14 +610,16 @@ fn draw_table(frame: &mut Frame, games: &[GameStatus], selected: usize) {
     });
 
     let widths = [
-        Constraint::Percentage(50),
-        Constraint::Percentage(25),
+        Constraint::Percentage(40),
+        Constraint::Percentage(20),
+        Constraint::Percentage(15),
         Constraint::Percentage(25),
     ];
 
     let header = Row::new(vec![
         t!("tui.table.header_game").to_string(),
         t!("tui.table.header_last_backup").to_string(),
+        t!("tui.table.header_size").to_string(),
         t!("tui.table.header_status").to_string(),
     ])
     .style(Style::new().add_modifier(Modifier::BOLD));

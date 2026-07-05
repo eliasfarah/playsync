@@ -2,6 +2,7 @@ cli:
   status:
     header_game: "JEU"
     header_last_backup: "DERNIÈRE SAUVEGARDE"
+    header_size: "TAILLE"
     header_status: "STATUT"
     no_save_detected: "⚠ aucune sauvegarde détectée (voir extra_save_paths dans config.toml)"
     never_synced: "jamais synchronisé"
@@ -83,6 +84,7 @@ tui:
   table:
     header_game: "Jeu"
     header_last_backup: "Dernière sauvegarde"
+    header_size: "Taille"
     header_status: "Statut"
     no_save_detected: "⚠ aucune sauvegarde détectée"
     title: " PlaySync — [↑↓] naviguer  [Enter] actions  [s] tout synchroniser  [r] actualiser  [q] quitter  [c] paramètres "
