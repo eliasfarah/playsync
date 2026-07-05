@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use playsync_core::ipc::CloudProvider;
+use rust_i18n::t;
 
 pub enum RestoreSource {
     Local,
@@ -16,7 +17,7 @@ pub fn parse_provider(provider: &str) -> Result<CloudProvider> {
     match provider {
         "google-drive" | "gdrive" => Ok(CloudProvider::GoogleDrive),
         "box" => Ok(CloudProvider::Box),
-        other => bail!("provedor desconhecido: {other} (use `google-drive` ou `box`)"),
+        other => bail!(t!("cli.cloud.unknown_provider", other = other)),
     }
 }
 
@@ -77,7 +78,7 @@ pub async fn list_versions(
         RestoreSource::Cloud(provider) => {
             let backend = playsync_core::cloud::backend_for(*provider);
             if !backend.is_connected() {
-                bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
+                bail!(t!("cli.restore.provider_not_connected", provider = format!("{provider:?}")));
             }
             backend.list_files(&format!("PlaySync/{sanitized}")).await?
         }
@@ -156,18 +157,18 @@ pub async fn list_versions_with_info(
 pub fn format_version_label(info: &VersionInfo, short_session_warning_secs: i64) -> String {
     match info.session {
         SessionInfo::Unknown => info.file_name.clone(),
-        SessionInfo::Manual => format!("{} (manual)", info.file_name),
+        SessionInfo::Manual => format!("{}{}", info.file_name, t!("cli.restore.label_manual")),
         SessionInfo::Session { duration_secs } => {
             let duration_secs = duration_secs.max(0);
             let label = if duration_secs >= 60 {
-                format!("{}min", duration_secs / 60)
+                t!("cli.restore.unit_min", n = duration_secs / 60).to_string()
             } else {
-                format!("{duration_secs}s")
+                t!("cli.restore.unit_sec", n = duration_secs).to_string()
             };
             if duration_secs < short_session_warning_secs {
-                format!("{} (\u{26a0} sessao curta — {label})", info.file_name)
+                format!("{}{}", info.file_name, t!("cli.restore.label_short_session", label = label))
             } else {
-                format!("{} (sessao de {label})", info.file_name)
+                format!("{}{}", info.file_name, t!("cli.restore.label_session", label = label))
             }
         }
     }
@@ -182,11 +183,11 @@ pub fn pick_version<'a>(versions: &'a [String], explicit: Option<&str>) -> Resul
             .iter()
             .find(|v| v.as_str() == name)
             .map(String::as_str)
-            .with_context(|| format!("versao \"{name}\" nao encontrada (use --list-versions pra ver as disponiveis)")),
+            .with_context(|| t!("cli.restore.version_not_found", name = name).to_string()),
         None => versions
             .last()
             .map(String::as_str)
-            .context("nenhum backup encontrado pra esse jogo/pasta/origem"),
+            .with_context(|| t!("cli.restore.no_backup_for_slot").to_string()),
     }
 }
 
@@ -204,19 +205,19 @@ pub async fn fetch_backup_bytes(
             let path = config.local_backup_root()?.join(sanitized).join(file_name);
             let bytes = tokio::fs::read(&path)
                 .await
-                .with_context(|| format!("nao encontrei backup local em {}", path.display()))?;
+                .with_context(|| t!("cli.restore.local_backup_not_found", path = path.display()).to_string())?;
             Ok(("local".to_string(), bytes))
         }
         RestoreSource::Cloud(provider) => {
             let backend = playsync_core::cloud::backend_for(*provider);
             if !backend.is_connected() {
-                bail!("{provider:?} nao conectado — rode `playsync cloud connect` antes");
+                bail!(t!("cli.restore.provider_not_connected", provider = format!("{provider:?}")));
             }
             let remote_path = format!("PlaySync/{sanitized}/{file_name}");
             let bytes = backend
                 .download(&remote_path)
                 .await
-                .with_context(|| format!("nao consegui baixar {remote_path}"))?;
+                .with_context(|| t!("cli.restore.download_failed", remote_path = remote_path).to_string())?;
             Ok((format!("{provider:?}"), bytes))
         }
     }
@@ -228,12 +229,12 @@ pub async fn fetch_backup_bytes(
 pub fn extract_over(bytes: &[u8], target: &Path) -> Result<()> {
     if target.is_dir() {
         std::fs::remove_dir_all(target)
-            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
+            .with_context(|| t!("cli.restore.delete_failed", path = target.display()).to_string())?;
     } else if target.exists() {
         std::fs::remove_file(target)
-            .with_context(|| format!("nao consegui apagar {}", target.display()))?;
+            .with_context(|| t!("cli.restore.delete_failed", path = target.display()).to_string())?;
     }
 
     let anchor = target.parent().unwrap_or(target);
-    playsync_core::archive::unzip_to(bytes, anchor).context("falha ao extrair o backup")
+    playsync_core::archive::unzip_to(bytes, anchor).with_context(|| t!("cli.restore.extract_failed").to_string())
 }

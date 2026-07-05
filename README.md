@@ -33,6 +33,14 @@ filesystem watcher, no manual steps once it's set up.
   or cloud provider.)
 - Cloud backends: **Google Drive** and **Box** (OAuth2; the app only ever
   sees the files it creates itself).
+- Auto-restore on launch: if the cloud has a newer save than the one on this
+  machine (e.g. you played on another PC), it's downloaded and restored
+  automatically before you'd otherwise start playing on a stale save. On by
+  default whenever a cloud provider is configured; toggle with `playsync
+  config auto-restore <on|off>` or from the TUI settings screen (`c`).
+- CLI/TUI available in 8 languages (English, Português (BR), Español,
+  Français, Deutsch, 简体中文, 日本語, Русский) — auto-detected from the
+  system locale, or set explicitly with `playsync config language <code>`.
 - Simple CLI (`playsync status` / `sync` / `history` / `cloud connect`).
 - Backup history kept in sqlite.
 
@@ -166,7 +174,8 @@ most recently).
 Running `playsync` with no arguments opens an interactive TUI: navigate the
 game list with `↑↓`, press `Enter` on a game for a per-game action menu
 (sync now, download from cloud only, restore from local, or download +
-restore), `s` to sync everything, `r` to refresh, `q` to quit. Destructive
+restore), `s` to sync everything, `r` to refresh, `c` for settings (cloud
+provider, auto-restore on launch, language), `q` to quit. Destructive
 actions (restoring over the live save) ask for confirmation first.
 
 Everything is also available non-interactively:
@@ -180,6 +189,8 @@ playsync history --limit N   # history with a custom limit (default: 20)
 playsync cloud connect <google-drive|box>      # (re)authorize a provider
 playsync cloud test-upload <google-drive|box>  # sanity-check the OAuth2 + upload pipeline
 playsync restore --app-id ID --source <local|google-drive|box>  # restore a backup over the current save
+playsync config auto-restore <on|off>          # toggle auto-restore-on-launch
+playsync config language <code>                # en, pt-BR, es, fr, de, zh-CN, ja, ru
 ```
 
 Day to day, once set up, no command is needed — the daemon detects the game
@@ -238,6 +249,8 @@ sync_debounce_secs = 5               # wait after the game closes before syncing
 local_backup_dir = "/custom/path"    # default: ~/PlaySync
 backup_versions_to_keep = 5          # how many timestamped backups to keep per save path
 short_session_warning_secs = 120     # sessions shorter than this are flagged in --list-versions
+language = "pt-BR"                   # unset: auto-detected from the system locale, falls back to English
+auto_restore_on_launch = true        # unset: on by default whenever cloud_provider is set
 ```
 
 ### Uninstalling
@@ -260,6 +273,15 @@ Backups in `~/PlaySync/` (or your configured `local_backup_dir`) are **not**
 deleted by any of the steps above — they're your files, remove them manually
 if you want to. The same goes for anything already uploaded to the cloud
 (the `PlaySync/` folder in Google Drive/Box).
+
+### Credits
+
+Save file location detection is powered by the [Ludusavi
+manifest](https://github.com/mtkennerly/ludusavi-manifest) (MIT), a
+community-curated database of ~19k games' save locations built for
+[Ludusavi](https://github.com/mtkennerly/ludusavi). PlaySync caches it
+locally and falls back to heuristic directory scanning only for games not
+yet in the manifest.
 
 ### License
 
@@ -294,6 +316,16 @@ precisar de watcher contínuo nas pastas de save.
   ou provedor de nuvem.)
 - Backends de nuvem: **Google Drive** e **Box** (OAuth2, o app só enxerga os
   arquivos que ele mesmo cria).
+- Restauração automática ao abrir o jogo: se a nuvem tiver um save mais
+  recente do que o desta máquina (ex: você jogou em outro PC), ele é baixado
+  e restaurado automaticamente antes de você jogar em cima de um save
+  desatualizado. Ligado por padrão sempre que houver um provedor de nuvem
+  configurado; dá pra ligar/desligar com `playsync config auto-restore
+  <on|off>` ou pela tela de configurações da TUI (`c`).
+- CLI/TUI disponível em 8 idiomas (English, Português (BR), Español,
+  Français, Deutsch, 简体中文, 日本語, Русский) — detectado automaticamente
+  a partir do locale do sistema, ou definido na mão com `playsync config
+  language <código>`.
 - CLI simples (`playsync status` / `sync` / `history` / `cloud connect`).
 - Histórico de backups em sqlite.
 
@@ -427,8 +459,9 @@ Só um provedor fica ativo por vez (o último `cloud connect` bem-sucedido).
 Rodar `playsync` sem argumentos abre uma TUI interativa: navega na lista de
 jogos com `↑↓`, aperta `Enter` num jogo pra abrir um menu de acoes (sincronizar
 agora, baixar da nuvem so pra local, restaurar do local, ou baixar da nuvem e
-restaurar), `s` sincroniza tudo, `r` atualiza, `q` sai. Acoes destrutivas
-(restaurar por cima do save atual) pedem confirmacao antes.
+restaurar), `s` sincroniza tudo, `r` atualiza, `c` abre as configurações
+(provedor de nuvem, restauração automática ao abrir, idioma), `q` sai. Acoes
+destrutivas (restaurar por cima do save atual) pedem confirmacao antes.
 
 Tudo tambem esta disponivel sem interatividade:
 
@@ -441,6 +474,8 @@ playsync history --limit N   # historico com um limite customizado (padrao: 20)
 playsync cloud connect <google-drive|box>      # (re)autoriza um provedor
 playsync cloud test-upload <google-drive|box>  # valida o pipeline OAuth2 + upload
 playsync restore --app-id ID --source <local|google-drive|box>  # restaura um backup por cima do save atual
+playsync config auto-restore <on|off>          # liga/desliga a restauração automática ao abrir
+playsync config language <código>              # en, pt-BR, es, fr, de, zh-CN, ja, ru
 ```
 
 No dia a dia, depois de configurado, nenhum comando é necessário — o daemon
@@ -499,6 +534,8 @@ sync_debounce_secs = 5                 # espera apos fechar o jogo antes de sinc
 local_backup_dir = "/caminho/custom"   # padrao: ~/PlaySync
 backup_versions_to_keep = 5            # quantos backups com timestamp manter por pasta de save
 short_session_warning_secs = 120       # sessoes mais curtas que isso sao marcadas no --list-versions
+language = "pt-BR"                     # sem essa linha: detecta do locale do sistema, cai pro ingles
+auto_restore_on_launch = true          # sem essa linha: ligado por padrao se cloud_provider estiver setado
 ```
 
 ### Desinstalação
@@ -521,6 +558,15 @@ Os backups em `~/PlaySync/` (ou o `local_backup_dir` configurado) **não** são
 apagados por nenhum dos passos acima — são seus arquivos, apague manualmente
 se quiser. O mesmo vale para os arquivos já enviados à nuvem (pasta
 `PlaySync/` no Google Drive/Box).
+
+### Créditos
+
+A detecção do local dos saves usa o [manifest do
+Ludusavi](https://github.com/mtkennerly/ludusavi-manifest) (MIT), um banco de
+dados mantido pela comunidade com o local de save de ~19 mil jogos, feito
+para o [Ludusavi](https://github.com/mtkennerly/ludusavi). O PlaySync guarda
+esse manifest em cache local e só cai pra varredura heurística de pastas nos
+jogos que ainda não estão nele.
 
 ### Licença
 

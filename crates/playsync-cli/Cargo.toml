@@ -25,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 # Usamos `ratatui::crossterm` (re-exportado) em vez de uma dependencia
 # `crossterm` separada, pra nao arriscar duas versoes divergentes no grafo.
 ratatui = "0.30"
+rust-i18n = "4.1.0"
 
 # `cargo deb -p playsync` empacota os dois binarios do workspace + a unit do
 # systemd num unico .deb. Precisa rodar `cargo build --release --workspace`

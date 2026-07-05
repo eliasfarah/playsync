@@ -1,13 +1,17 @@
 mod actions;
+mod i18n;
 mod ipc_client;
 mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use playsync_core::ipc::{CloudProvider, Request, Response, SyncStatus};
+use rust_i18n::t;
+
+rust_i18n::i18n!("locales", fallback = "en");
 
 #[derive(Parser)]
-#[command(name = "playsync", version, about = "Backup automatico de saves da Steam para a nuvem")]
+#[command(name = "playsync", version, about = "Automatic Steam save backup to the cloud")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -15,46 +19,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Mostra o status de sincronizacao de cada jogo (tabela em texto puro).
+    /// Show the sync status of each game (plain-text table).
     Status,
-    /// Forca uma sincronizacao agora.
+    /// Force a sync right now.
     Sync {
-        /// AppID especifico a sincronizar. Se omitido, sincroniza todos os jogos elegiveis.
+        /// Specific AppID to sync. If omitted, syncs all eligible games.
         #[arg(long)]
         app_id: Option<u32>,
     },
-    /// Mostra o historico de backups.
+    /// Show backup history.
     History {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
-    /// Gerencia a conexao com provedores de nuvem.
+    /// Manage the connection to cloud providers.
     Cloud {
         #[command(subcommand)]
         action: CloudCommand,
     },
-    /// Restaura um backup (local ou da nuvem) de volta pra pasta de save do jogo.
+    /// Manage PlaySync settings (language, auto-restore).
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommand,
+    },
+    /// Restore a backup (local or cloud) back to the game's save folder.
     Restore {
-        /// AppID do jogo (veja `playsync status`).
+        /// Game AppID (see `playsync status`).
         #[arg(long)]
         app_id: u32,
-        /// De onde restaurar: "local", "google-drive" ou "box".
+        /// Where to restore from: "local", "google-drive" or "box".
         #[arg(long)]
         source: String,
-        /// Qual pasta de save restaurar, quando o jogo tem mais de uma
-        /// (indice mostrado ao rodar sem essa opcao). Se o jogo so tem uma,
-        /// e opcional.
+        /// Which save folder to restore, when the game has more than one
+        /// (index shown when running without this option). Optional if the
+        /// game only has one.
         #[arg(long)]
         path_index: Option<usize>,
-        /// Pula a confirmacao antes de sobrescrever o save atual.
+        /// Skip the confirmation before overwriting the current save.
         #[arg(long, default_value_t = false)]
         yes: bool,
-        /// So lista as versoes de backup disponiveis (mais recentes por
-        /// ultimo) pra esse jogo/pasta/origem, sem restaurar nada.
+        /// Only list the available backup versions (most recent last) for
+        /// this game/folder/source, without restoring anything.
         #[arg(long, default_value_t = false)]
         list_versions: bool,
-        /// Restaura uma versao especifica (nome exato mostrado por
-        /// `--list-versions`) em vez da mais recente.
+        /// Restore a specific version (exact name shown by
+        /// `--list-versions`) instead of the most recent one.
         #[arg(long)]
         version: Option<String>,
     },
@@ -62,16 +71,28 @@ enum Command {
 
 #[derive(Subcommand)]
 enum CloudCommand {
-    /// Autoriza o PlaySync a acessar `google-drive` ou `box`.
+    /// Authorize PlaySync to access `google-drive` or `box`.
     Connect { provider: String },
-    /// Envia um zip de teste (vazio, gerado na hora) pro provedor conectado,
-    /// so pra validar o pipeline OAuth2 + upload de ponta a ponta.
+    /// Sends a test zip (empty, generated on the fly) to the connected
+    /// provider, just to validate the OAuth2 + upload pipeline end-to-end.
     TestUpload { provider: String },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Turn auto-restore-on-launch on or off ("on"/"off").
+    AutoRestore { state: String },
+    /// Set the CLI/TUI language (e.g. "en", "pt-BR", "es", "fr", "de",
+    /// "zh-CN", "ja", "ru").
+    Language { code: String },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
+
+    let config = playsync_core::config::Config::load_or_default().unwrap_or_default();
+    rust_i18n::set_locale(&i18n::resolve_language(config.language.as_deref()));
 
     // So importa pros comandos que chamam `discover_games` direto (restore,
     // TUI) — `status`/`sync`/`history` falam com o daemon, que cuida do seu
@@ -96,6 +117,10 @@ async fn main() -> Result<()> {
             CloudCommand::Connect { provider } => cloud_connect(&provider).await,
             CloudCommand::TestUpload { provider } => cloud_test_upload(&provider).await,
         },
+        Some(Command::Config { action }) => match action {
+            ConfigCommand::AutoRestore { state } => set_auto_restore(&state).await,
+            ConfigCommand::Language { code } => set_language(&code).await,
+        },
         Some(Command::Restore { app_id, source, path_index, yes, list_versions, version }) => {
             restore(app_id, &source, path_index, yes, list_versions, version.as_deref()).await
         }
@@ -106,25 +131,30 @@ async fn print_status() -> Result<()> {
     let games = match ipc_client::send(Request::Status).await? {
         Response::Status { games } => games,
         Response::Error { message } => bail!(message),
-        _ => bail!("resposta inesperada do daemon"),
+        _ => bail!(t!("cli.common.unexpected_response")),
     };
 
-    println!("{:<40} {:<20} STATUS", "JOGO", "ULTIMO BACKUP");
+    println!(
+        "{:<40} {:<20} {}",
+        t!("cli.status.header_game"),
+        t!("cli.status.header_last_backup"),
+        t!("cli.status.header_status"),
+    );
     for game in games {
         let status = if !game.has_save_paths {
-            "⚠ sem save detectado (veja extra_save_paths no config.toml)"
+            t!("cli.status.no_save_detected")
         } else {
             match game.sync_status {
-                SyncStatus::NeverSynced => "nunca sincronizado",
-                SyncStatus::Idle => "em dia",
-                SyncStatus::Running => "sincronizando...",
-                SyncStatus::Error => "erro",
+                SyncStatus::NeverSynced => t!("cli.status.never_synced"),
+                SyncStatus::Idle => t!("cli.status.idle"),
+                SyncStatus::Running => t!("cli.status.running"),
+                SyncStatus::Error => t!("cli.status.error"),
             }
         };
         let last_backup = game
             .last_backup
             .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| "-".to_string());
+            .unwrap_or_else(|| t!("cli.status.none").to_string());
         println!("{:<40} {:<20} {}", game.name, last_backup, status);
     }
     Ok(())
@@ -133,11 +163,11 @@ async fn print_status() -> Result<()> {
 async fn sync_now(app_id: Option<u32>) -> Result<()> {
     match ipc_client::send(Request::SyncNow { app_id }).await? {
         Response::Ack => {
-            println!("sincronizacao disparada");
+            println!("{}", t!("cli.sync.triggered"));
             Ok(())
         }
         Response::Error { message } => bail!(message),
-        _ => bail!("resposta inesperada do daemon"),
+        _ => bail!(t!("cli.common.unexpected_response")),
     }
 }
 
@@ -145,19 +175,59 @@ async fn print_history(limit: u32) -> Result<()> {
     let entries = match ipc_client::send(Request::History { limit }).await? {
         Response::History { entries } => entries,
         Response::Error { message } => bail!(message),
-        _ => bail!("resposta inesperada do daemon"),
+        _ => bail!(t!("cli.common.unexpected_response")),
     };
 
-    println!("{:<40} {:<20} {:<15} OK?", "JOGO", "QUANDO", "DESTINO");
+    println!(
+        "{:<40} {:<20} {:<15} {}",
+        t!("cli.history.header_game"),
+        t!("cli.history.header_when"),
+        t!("cli.history.header_destination"),
+        t!("cli.history.header_ok"),
+    );
     for entry in entries {
+        let ok = if entry.success { t!("cli.history.yes") } else { t!("cli.history.no") };
         println!(
             "{:<40} {:<20} {:<15} {}",
             entry.name,
             entry.timestamp.format("%Y-%m-%d %H:%M"),
             entry.destination,
-            if entry.success { "sim" } else { "nao" },
+            ok,
         );
     }
+    Ok(())
+}
+
+async fn set_auto_restore(state: &str) -> Result<()> {
+    let mut config = playsync_core::config::Config::load_or_default()?;
+    let enabled = match state {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        other => bail!(t!("cli.config.invalid_auto_restore_state", value = other)),
+    };
+    config.auto_restore_on_launch = Some(enabled);
+    config.save()?;
+    if enabled {
+        println!("{}", t!("cli.config.auto_restore_enabled"));
+    } else {
+        println!("{}", t!("cli.config.auto_restore_disabled"));
+    }
+    Ok(())
+}
+
+async fn set_language(code: &str) -> Result<()> {
+    if !i18n::SUPPORTED_LANGUAGES.contains(&code) {
+        bail!(t!(
+            "cli.config.unknown_language",
+            lang = code,
+            available = i18n::SUPPORTED_LANGUAGES.join(", ")
+        ));
+    }
+    let mut config = playsync_core::config::Config::load_or_default()?;
+    config.language = Some(code.to_string());
+    config.save()?;
+    rust_i18n::set_locale(code);
+    println!("{}", t!("cli.config.language_set", language = i18n::display_name(code)));
     Ok(())
 }
 
@@ -183,7 +253,7 @@ async fn cloud_test_upload(provider: &str) -> Result<()> {
     let backend = playsync_core::cloud::backend_for(provider);
 
     if !backend.is_connected() {
-        bail!("nao conectado ainda — rode `playsync cloud connect {provider:?}` antes");
+        bail!(t!("cli.cloud.not_connected", provider = format!("{provider:?}")));
     }
 
     // Zip vazio valido: so o registro "End Of Central Directory" (22 bytes).
@@ -197,7 +267,7 @@ async fn cloud_test_upload(provider: &str) -> Result<()> {
     let _ = std::fs::remove_file(&tmp);
     result?;
 
-    println!("upload de teste concluido — confira em drive.google.com (ou no Box)");
+    println!("{}", t!("cli.cloud.test_upload_done"));
     Ok(())
 }
 
@@ -215,35 +285,25 @@ async fn restore(
 ) -> Result<()> {
     let source = actions::parse_source(source)?;
 
-    let games = playsync_core::steam::discover_games().context("falha ao listar jogos da Steam")?;
+    let games = playsync_core::steam::discover_games().with_context(|| t!("cli.restore.steam_discovery_failed").to_string())?;
     let game = games
         .into_iter()
         .find(|g| g.app_id == app_id)
-        .with_context(|| format!("jogo com AppID {app_id} nao encontrado (veja `playsync status`)"))?;
+        .with_context(|| t!("cli.restore.game_not_found", app_id = app_id).to_string())?;
 
     let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
     if paths.is_empty() {
-        bail!(
-            "\"{}\" nao tem pasta de save conhecida (nem ao vivo, nem no historico de backups)",
-            game.name
-        );
+        bail!(t!("cli.restore.no_save_path", name = game.name));
     }
     if used_history {
-        println!(
-            "aviso: a pasta de save atual de \"{}\" nao foi encontrada no disco — usando o caminho do ultimo backup bem sucedido",
-            game.name
-        );
+        println!("{}", t!("cli.restore.used_history_warning", name = game.name));
     }
 
     let idx = match path_index {
         Some(idx) => idx,
         None if paths.len() == 1 => 0,
         None => {
-            println!(
-                "\"{}\" tem {} pastas de save — escolha uma com --path-index:",
-                game.name,
-                paths.len()
-            );
+            println!("{}", t!("cli.restore.choose_path_index", name = game.name, n = paths.len()));
             for (i, path) in paths.iter().enumerate() {
                 println!("  {i}: {}", path.display());
             }
@@ -253,11 +313,7 @@ async fn restore(
     let target = paths
         .get(idx)
         .with_context(|| {
-            format!(
-                "--path-index {idx} invalido — \"{}\" so tem {} pasta(s) de save",
-                game.name,
-                paths.len()
-            )
+            t!("cli.restore.invalid_path_index", idx = idx, name = game.name, n = paths.len()).to_string()
         })?
         .clone();
 
@@ -268,9 +324,9 @@ async fn restore(
             playsync_core::config::Config::load_or_default()?.short_session_warning_secs;
         let infos = actions::list_versions_with_info(app_id, &source, &sanitized, idx, paths.len()).await?;
         if infos.is_empty() {
-            println!("nenhuma versao de backup encontrada pra \"{}\" nessa origem", game.name);
+            println!("{}", t!("cli.restore.no_versions_found", name = game.name));
         } else {
-            println!("versoes disponiveis pra \"{}\" (mais recente por ultimo):", game.name);
+            println!("{}", t!("cli.restore.versions_available", name = game.name));
             for info in &infos {
                 println!("  {}", actions::format_version_label(info, short_session_warning_secs));
             }
@@ -283,23 +339,28 @@ async fn restore(
     let (source_label, bytes) = actions::fetch_backup_bytes(&source, &sanitized, &file_name).await?;
 
     println!(
-        "Restaurar \"{}\" ({file_name}, backup {source_label}) vai APAGAR e sobrescrever:\n  {}",
-        game.name,
-        target.display()
+        "{}",
+        t!(
+            "cli.restore.confirm_prompt",
+            name = game.name,
+            file_name = file_name,
+            source_label = source_label,
+            target = target.display()
+        )
     );
     if !yes {
-        print!("Continuar? [y/N] ");
+        print!("{}", t!("cli.restore.continue_prompt"));
         std::io::Write::flush(&mut std::io::stdout())?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("cancelado");
+            println!("{}", t!("cli.restore.cancelled"));
             return Ok(());
         }
     }
 
     actions::extract_over(&bytes, &target)?;
 
-    println!("Restaurado com sucesso: {}", target.display());
+    println!("{}", t!("cli.restore.success", target = target.display()));
     Ok(())
 }

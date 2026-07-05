@@ -1,4 +1,162 @@
-# PlaySync — estado da sessão (2026-07-04)
+# PlaySync — estado da sessão (2026-07-05)
+
+## Multi-idioma (i18n) na CLI/TUI: RESOLVIDO (2026-07-05)
+
+Primeiro item da lista "Pendente pra proxima sessao" (secao abaixo, de
+2026-07-04). Usuario pediu deteccao automatica do idioma do sistema, ingles
+como fallback padrao (nao mais portugues fixo), possibilidade de forcar outro
+idioma manualmente, e "se nao for muito esforco", adicionar os 6 idiomas mais
+comuns do mundo alem de ingles/portugues — confirmado: espanhol, frances,
+alemao, chines simplificado, japones, russo (evitando arabe/urdu de proposito,
+RTL nao renderiza direito na TUI atual com ratatui).
+
+**Escolha de crate:** `rust-i18n` v4 (YAML + macro `t!()`) em vez de `fluent`
+— o projeto nao precisa de plural/genero complexos (onde fluent brilha), e
+`rust-i18n` e bem mais simples de integrar num CLI/TUI pequeno como esse.
+
+**Gotcha real da API (nao documentado com clareza, so achado testando):** o
+formato de arquivo YAML por-idioma (`locales/en.yml`, `locales/pt-BR.yml`,
+...) carregado via `i18n!("locales")` **nao** usa uma chave raiz com o codigo
+do idioma (`en:` envolvendo tudo) — isso e o formato do MODO "arquivo unico
+multi-idioma" (`_version: 2`). No modo "um arquivo por idioma" as chaves ficam
+soltas na raiz do arquivo. Escrevi errado da primeira vez (com o wrapper),
+compilou sem erro nenhum, e o `t!()` simplesmente devolvia a CHAVE LITERAL em
+vez do texto traduzido, em TODOS os idiomas incluindo o fallback "en" — ou
+seja, sem nenhum log/erro/warning, parecia que a i18n inteira nao funcionava.
+So percebi rodando de verdade (`LANG=es_ES.UTF-8 playsync status` mostrando
+`cli.status.header_game` na tela em vez de `JUEGO`). Corrigido removendo a
+chave-wrapper de todos os 8 arquivos (script python pra de-indentar, nao na
+mao). Depois disso, validado ao vivo em EXATAMENTE 8 variantes de `LANG`
+(es_ES, ja_JP, de_DE, zh_CN, ru_RU, fr_FR, pt_BR, e it_IT pra confirmar o
+fallback pro ingles quando o idioma nao e suportado) — todas corretas.
+
+**Deteccao (`crates/playsync-cli/src/i18n.rs`, novo):** le
+`LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` nessa ordem (prioridade
+gettext-padrao), normaliza (`pt_BR.UTF-8` -> `pt-BR`, so o codigo de idioma
+primario importa pra variantes regionais nao suportadas: `es_MX` -> `es`,
+`pt_PT` -> `pt-BR` por ser o unico portugues suportado), cai pra `"en"` se nao
+detectar nada ou o idioma nao for um dos 8 suportados. `Config` ganhou
+`language: Option<String>` — se setado, tem prioridade sobre a deteccao
+automatica (`playsync config language <codigo>` seta isso).
+
+**Migracao:** todas as strings voltadas ao usuario em `main.rs`, `tui.rs`,
+`actions.rs` e `ipc_client.rs` (esse ultimo quase escapou da varredura —
+achado so por engano, ver abaixo) viraram chaves `t!()`. `--help` do clap
+(doc comments dos subcomandos) ficou so em ingles de proposito (fora do
+escopo — traduzir help text exigiria construir o `Command` na mao em vez do
+derive, desproporcional pro beneficio). `unreachable!()` e mensagens de
+panic internas (nunca deveriam aparecer pro usuario) tambem ficaram como
+estavam.
+
+**Quase um incidente serio durante a validacao:** enquanto eu tentava
+"descobrir o caminho real do save" pra montar um teste, rodei sem querer
+`playsync restore --app-id 335300 --source local --yes` (esqueci que `--yes`
+pula a confirmacao) contra o save de verdade do DARK SOULS II. Descobri
+DEPOIS que o jogo estava sendo jogado ao vivo pelo usuario naquele exato
+momento (processo rodando desde HH:22, save escrito HH:26). Verificacao
+imediata: o hash do save batia exatamente com o ultimo backup local (mesmo
+hash `fdf13fd1...` ja confirmado em sessao anterior) — ou seja, foi um no-op,
+sem perda; o jogo continuou rodando e salvando progresso novo normalmente
+depois. Mas foi sorte de timing, nao seguranca de verdade — o comando rodou
+ANTES do jogo abrir (ele ja tinha esse mesmo conteudo). Parei imediatamente
+de mexer no save real, perguntei pro usuario como prosseguir, ele fechou o
+jogo e autorizou continuar com um backup manual antes. **Licao registrada em
+[[feedback-validate-live]]:** nunca rodar um comando com `--yes`/destrutivo
+"so pra explorar/descobrir algo" — usar sempre a via read-only (grep no
+codigo, ou o comando sem `--yes` que so imprime e para).
+
+## Restauração automática ao abrir o jogo (auto-restore-on-launch): RESOLVIDO (2026-07-05)
+
+Pedido do usuario, junto com o item de i18n: ao iniciar um jogo, checar se a
+nuvem tem um save mais recente que o local e, se sim, baixar e restaurar
+automaticamente ANTES do jogo ler o save (cobre o cenario "joguei em outro
+PC, cheguei aqui e a Steam ainda nao sincronizou de volta"). Ligado por
+padrao SE tiver um `cloud_provider` configurado; dá pra ligar/desligar
+manualmente (`playsync config auto-restore on/off`, ou pela nova tela de
+configuracoes da TUI).
+
+**`Config` ganhou `auto_restore_on_launch: Option<bool>`** — `None` segue o
+default dinamico (`auto_restore_on_launch_effective()`: liga sozinho se
+`cloud_provider.is_some()`), `Some(_)` e escolha explicita do usuario que tem
+prioridade (inclusive desligar mesmo com nuvem configurada).
+
+**`SyncEngine::maybe_auto_restore_on_launch` (playsyncd/sync.rs, novo):**
+chamado numa `tokio::spawn` separada a partir do `GameEvent::Started` no loop
+principal do daemon (nao no caminho critico do watcher — envolve rede). Pra
+cada `save_path` do jogo: acha a versao mais recente local (`sort_versions`
++ `.pop()`) e a mais recente na nuvem (`backend.list_files` + mesma logica).
+Como o nome do arquivo de versao ja ordena lexicograficamente = cronologicamente
+(`versions.rs`), comparar as duas STRINGS direto ja diz qual e mais nova, sem
+precisar parsear timestamp. Se a da nuvem for mais nova (ou nao houver nenhuma
+local ainda), baixa e extrai por cima do save ao vivo (mesma logica de
+`actions::extract_over`, reimplementada aqui porque e outro crate). Sem
+debounce de proposito (diferente do sync ao fechar): quanto mais cedo, maior
+a chance de vencer o jogo lendo o save antigo. Best-effort — qualquer erro
+(rede, io) so loga (`tracing::warn!`) e desiste POR ESSE save_path, nunca
+impede o jogo de abrir.
+
+**Validado ao vivo, com muito cuidado** (ver incidente acima — o DARK SOULS
+II estava em sessao real do usuario nessa mesma janela de tempo; esperei ele
+fechar o jogo E confirmar antes de qualquer escrita). Protocolo: copia
+independente do save real + sha256 ANTES de tudo (`ddecf0d6...`). Cenario
+montado: sync com o conteudo original (versao A), modificado o save com um
+marcador distinguivel, sync de novo (versao B, mais nova), apagada SO a copia
+LOCAL da versao B (deixando local desatualizado e a nuvem com a versao boa),
+save real sobrescrito com bytes aleatorios (simulando "o que esta no disco
+antes do auto-restore agir"). Instalado o daemon novo, disparado
+`GameEvent::Started` via a mesma tecnica de sessoes anteriores (`env
+SteamAppId=335300 sleep N &`, forja a variavel de ambiente que o watcher
+escaneia). `journalctl` confirmou a linha exata: "auto-restore: save da nuvem
+era mais recente, restaurado antes do jogo ler o save" — e o sha256 do save
+real bateu EXATAMENTE com o conteudo da versao B da nuvem, nao com o lixo nem
+com o original. **Teste negativo tambem feito:** com
+`auto_restore_on_launch = false` no config, o mesmo cenario (save sobrescrito
+com lixo, jogo "iniciado") NAO disparou restauracao nenhuma (sem linha no log,
+hash continuou sendo o lixo) — confirma que o toggle realmente controla o
+comportamento. Ao final: save real restaurado ao original (do backup
+independente, sha256 conferido `ddecf0d6...`), config.toml revertido ao
+estado de antes do teste, `playsync sync` rodado uma vez mais pra deixar a
+versao mais recente local+nuvem batendo com o conteudo real (sem lixo de
+teste sobrando como "ultima versao").
+
+## Tela de configuracoes na TUI: RESOLVIDO (2026-07-05)
+
+Terceiro pedido da mesma leva: TUI ganha uma tela de configuracoes (tecla
+`[c]` na tabela principal) com 3 linhas navegaveis (`↑↓`): provedor de nuvem
+(cicla `nenhum -> google-drive -> box -> nenhum` no `[Enter]`), restauracao
+automatica ao abrir (liga/desliga no `[Enter]`), idioma (cicla os 8
+suportados no `[Enter]`, aplica `rust_i18n::set_locale` NA HORA — a tela
+inteira, incluindo a tabela por baixo, muda de idioma sem precisar reiniciar
+a TUI). Cada mudanca salva em `config.toml` imediatamente (mesmo padrao dos
+comandos `playsync config ...` da CLI).
+
+**Validado ao vivo via automacao de pty** (mesma tecnica de sessoes
+anteriores, script Python descartavel): aberta a tela com `[c]`, navegado ate
+"Idioma", ciclado duas vezes (pt-BR -> Español -> Français, confirmado no
+capture da tela, incluindo a TABELA por baixo mudando de idioma junto),
+navegado ate "Restaurar automaticamente" e alternado (LIGADO -> DÉSACTIVÉ,
+confirmado em frances por causa do ciclo anterior). Como o teste deixou
+`language`/`auto_restore_on_launch` setados no config.toml real da maquina,
+revertido ao final (idioma volta a auto-detectar do `LANG` real do sistema,
+`pt_BR.UTF-8` -> pt-BR; `auto_restore_on_launch` removido, volta a seguir o
+default dinamico).
+
+## Pendente pra proxima sessao (atualizado 2026-07-05)
+
+Restou so o segundo item da lista antiga: **Box sem exigir conta de
+developer propria** (ver secao original abaixo, "Estado ao encerrar a sessao
+(2026-07-04)" — ainda com a ressalva de seguranca do `client_secret`
+confidencial por resolver antes de implementar).
+
+**Ainda nao commitado** (i18n + auto-restore + tela de configuracoes, 3
+funcionalidades desta sessao) — `git status` mostra `Cargo.lock`,
+`crates/playsync-cli/Cargo.toml`, `crates/playsync-cli/src/{actions,
+ipc_client,main,tui}.rs`, `crates/playsync-core/src/config.rs`,
+`crates/playsyncd/src/{main,sync}.rs` modificados, e
+`crates/playsync-cli/locales/` + `crates/playsync-cli/src/i18n.rs` novos.
+README atualizado (EN+PT-BR) com os novos comandos/opcoes.
+
+
 
 ## Pendente pra proxima sessao (pedido pelo usuario, 2026-07-04)
 

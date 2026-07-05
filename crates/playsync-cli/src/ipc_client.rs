@@ -3,18 +3,15 @@
 
 use anyhow::{bail, Context, Result};
 use playsync_core::ipc::{socket_path, Request, Response};
+use rust_i18n::t;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 pub async fn send(request: Request) -> Result<Response> {
     let path = socket_path();
-    let stream = UnixStream::connect(&path).await.with_context(|| {
-        format!(
-            "nao consegui conectar ao daemon em {} — ele esta rodando? \
-             (`systemctl --user status playsyncd`)",
-            path.display()
-        )
-    })?;
+    let stream = UnixStream::connect(&path)
+        .await
+        .with_context(|| t!("cli.common.daemon_not_running", path = path.display()).to_string())?;
 
     let (reader, mut writer) = stream.into_split();
 
@@ -25,6 +22,6 @@ pub async fn send(request: Request) -> Result<Response> {
     let mut lines = BufReader::new(reader).lines();
     match lines.next_line().await? {
         Some(line) => Ok(serde_json::from_str(&line)?),
-        None => bail!("o daemon fechou a conexao sem responder"),
+        None => bail!(t!("cli.common.daemon_closed_connection")),
     }
 }

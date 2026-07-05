@@ -21,8 +21,10 @@ use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
 };
 use ratatui::Frame;
+use rust_i18n::t;
 
 use crate::actions::{self, RestoreSource};
+use crate::i18n;
 use crate::ipc_client;
 
 /// Intervalo entre polls de teclado; tambem usado como base pro auto-refresh
@@ -43,11 +45,14 @@ enum GameAction {
     RestoreFromCloud,
 }
 
+/// Segundo campo e a chave de traducao (`tui.actions.*`), nao o rotulo em si
+/// — o rotulo muda com o idioma, entao precisa ser resolvido via `t!()` no
+/// momento de exibir, nao guardado como `&'static str` fixo.
 const ACTIONS: &[(GameAction, &str)] = &[
-    (GameAction::SyncNow, "Sincronizar agora (backup local + nuvem)"),
-    (GameAction::PullFromCloud, "Baixar da nuvem (so guarda local, nao mexe no save)"),
-    (GameAction::RestoreLocal, "Restaurar no jogo (a partir do backup local)"),
-    (GameAction::RestoreFromCloud, "Baixar da nuvem e restaurar no jogo"),
+    (GameAction::SyncNow, "tui.actions.sync_now"),
+    (GameAction::PullFromCloud, "tui.actions.pull_from_cloud"),
+    (GameAction::RestoreLocal, "tui.actions.restore_local"),
+    (GameAction::RestoreFromCloud, "tui.actions.restore_from_cloud"),
 ];
 
 fn is_destructive(action: GameAction) -> bool {
@@ -86,7 +91,20 @@ enum Mode {
         used_history: bool,
     },
     Info(String),
+    Settings {
+        cursor: usize,
+    },
 }
+
+/// Linhas da tela de configuracoes, na ordem mostrada.
+const SETTINGS_ROWS: usize = 3;
+const SETTINGS_CLOUD_ROW: usize = 0;
+const SETTINGS_AUTO_RESTORE_ROW: usize = 1;
+const SETTINGS_LANGUAGE_ROW: usize = 2;
+
+/// Provedores que o `[Enter]` na linha de nuvem cicla entre si (`None` inclusive,
+/// pra permitir desativar a nuvem sem editar o config.toml na mao).
+const CYCLABLE_PROVIDERS: &[Option<&str>] = &[None, Some("google-drive"), Some("box")];
 
 pub async fn run() -> Result<()> {
     let mut games = fetch_status().await.unwrap_or_default();
@@ -136,6 +154,7 @@ pub async fn run() -> Result<()> {
                     let _ = ipc_client::send(Request::SyncNow { app_id: None }).await;
                     Mode::Table
                 }
+                KeyCode::Char('c') => Mode::Settings { cursor: 0 },
                 KeyCode::Up | KeyCode::Char('k') => {
                     selected = selected.saturating_sub(1);
                     Mode::Table
@@ -221,6 +240,19 @@ pub async fn run() -> Result<()> {
             },
 
             Mode::Info(_) => Mode::Table,
+
+            Mode::Settings { cursor } => match key.code {
+                KeyCode::Esc => Mode::Table,
+                KeyCode::Up | KeyCode::Char('k') => Mode::Settings { cursor: cursor.saturating_sub(1) },
+                KeyCode::Down | KeyCode::Char('j') => {
+                    Mode::Settings { cursor: (cursor + 1).min(SETTINGS_ROWS - 1) }
+                }
+                KeyCode::Enter => {
+                    apply_settings_action(cursor);
+                    Mode::Settings { cursor }
+                }
+                _ => Mode::Settings { cursor },
+            },
         };
 
         // Qualquer transicao pra Info significa que uma acao acabou de rodar
@@ -244,7 +276,7 @@ async fn fetch_status() -> Result<Vec<GameStatus>> {
     match ipc_client::send(Request::Status).await? {
         Response::Status { games } => Ok(games),
         Response::Error { message } => bail!(message),
-        _ => bail!("resposta inesperada do daemon"),
+        _ => bail!(t!("cli.common.unexpected_response")),
     }
 }
 
@@ -252,8 +284,39 @@ fn active_cloud_provider() -> Result<CloudProvider> {
     let config = playsync_core::config::Config::load_or_default()?;
     let raw = config
         .cloud_provider
-        .context("nenhum provedor de nuvem configurado (rode `playsync cloud connect`)")?;
+        .with_context(|| t!("tui.cloud_provider_not_configured").to_string())?;
     actions::parse_provider(&raw)
+}
+
+/// Aplica a acao de `[Enter]` na linha `cursor` da tela de configuracoes:
+/// cicla o provedor de nuvem, alterna o auto-restore, ou cicla o idioma —
+/// persiste em `config.toml` na hora (mesmo padrao de `playsync config ...`
+/// na CLI). Idioma tambem aplica `rust_i18n::set_locale` na hora, sem
+/// precisar reiniciar a TUI pra ver o efeito.
+fn apply_settings_action(cursor: usize) {
+    let Ok(mut config) = playsync_core::config::Config::load_or_default() else {
+        return;
+    };
+    match cursor {
+        SETTINGS_CLOUD_ROW => {
+            let current = config.cloud_provider.as_deref();
+            let idx = CYCLABLE_PROVIDERS.iter().position(|p| *p == current).unwrap_or(0);
+            let next = CYCLABLE_PROVIDERS[(idx + 1) % CYCLABLE_PROVIDERS.len()];
+            config.cloud_provider = next.map(str::to_string);
+        }
+        SETTINGS_AUTO_RESTORE_ROW => {
+            config.auto_restore_on_launch = Some(!config.auto_restore_on_launch_effective());
+        }
+        SETTINGS_LANGUAGE_ROW => {
+            let current = rust_i18n::locale().to_string();
+            let idx = i18n::SUPPORTED_LANGUAGES.iter().position(|l| *l == current).unwrap_or(0);
+            let next = i18n::SUPPORTED_LANGUAGES[(idx + 1) % i18n::SUPPORTED_LANGUAGES.len()];
+            config.language = Some(next.to_string());
+            rust_i18n::set_locale(next);
+        }
+        _ => {}
+    }
+    let _ = config.save();
 }
 
 /// Decide o proximo passo depois que uma acao foi escolhida no menu: dispara
@@ -261,20 +324,17 @@ fn active_cloud_provider() -> Result<CloudProvider> {
 /// uma), ou segue pra escolha de versao (`after_path_chosen`).
 async fn choose_action(app_id: u32, action: GameAction, game_saves: &[GameSave]) -> Mode {
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
-        return Mode::Info(format!("jogo (AppID {app_id}) nao encontrado"));
+        return Mode::Info(t!("tui.game_not_found", app_id = app_id).to_string());
     };
 
     if action == GameAction::SyncNow {
         let _ = ipc_client::send(Request::SyncNow { app_id: Some(app_id) }).await;
-        return Mode::Info(format!("sincronizacao de \"{}\" disparada", game.name));
+        return Mode::Info(t!("tui.sync_triggered", name = game.name).to_string());
     }
 
     let (paths, _) = actions::restore_candidate_paths(app_id, &game.save_paths);
     if paths.is_empty() {
-        return Mode::Info(format!(
-            "\"{}\" nao tem pasta de save conhecida (nem ao vivo, nem no historico de backups)",
-            game.name
-        ));
+        return Mode::Info(t!("cli.restore.no_save_path", name = game.name).to_string());
     }
 
     if paths.len() == 1 {
@@ -303,7 +363,7 @@ fn version_source_for(action: GameAction) -> Result<RestoreSource> {
 /// que existe.
 async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, game_saves: &[GameSave]) -> Mode {
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
-        return Mode::Info(format!("jogo (AppID {app_id}) nao encontrado"));
+        return Mode::Info(t!("tui.game_not_found", app_id = app_id).to_string());
     };
     let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
     let sanitized = playsync_core::naming::sanitize(&game.name);
@@ -311,16 +371,16 @@ async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, g
 
     let source = match version_source_for(action) {
         Ok(source) => source,
-        Err(err) => return Mode::Info(format!("Erro: {err}")),
+        Err(err) => return Mode::Info(t!("tui.error_prefix", err = err).to_string()),
     };
 
     let versions = match actions::list_versions_with_info(app_id, &source, &sanitized, path_index, paths_len).await {
         Ok(versions) => versions,
-        Err(err) => return Mode::Info(format!("Erro: {err}")),
+        Err(err) => return Mode::Info(t!("tui.error_prefix", err = err).to_string()),
     };
 
     if versions.is_empty() {
-        return Mode::Info(format!("nenhum backup encontrado pra \"{}\" nessa origem", game.name));
+        return Mode::Info(t!("cli.restore.no_versions_found", name = game.name).to_string());
     }
 
     if versions.len() == 1 {
@@ -357,18 +417,18 @@ async fn confirm_or_run(
 /// `VersionChoice`).
 async fn run_action(app_id: u32, action: GameAction, path_index: usize, file_name: &str, game_saves: &[GameSave]) -> String {
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
-        return format!("jogo (AppID {app_id}) nao encontrado");
+        return t!("tui.game_not_found", app_id = app_id).to_string();
     };
     let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
     let Some(target) = paths.get(path_index) else {
-        return format!("indice de save invalido ({path_index})");
+        return t!("tui.invalid_path_index", path_index = path_index).to_string();
     };
     let target = target.clone();
     let sanitized = playsync_core::naming::sanitize(&game.name);
     let warning = if used_history {
-        "aviso: pasta de save atual nao encontrada no disco, usando o caminho do ultimo backup — "
+        t!("tui.history_fallback_prefix").to_string()
     } else {
-        ""
+        String::new()
     };
 
     let outcome: Result<String> = async {
@@ -386,20 +446,20 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, file_nam
                     tokio::fs::create_dir_all(parent).await?;
                 }
                 tokio::fs::write(&local_dest, bytes).await?;
-                Ok(format!("Baixado da nuvem para {}", local_dest.display()))
+                Ok(t!("tui.pulled_from_cloud", path = local_dest.display()).to_string())
             }
             GameAction::RestoreLocal => {
                 let (_, bytes) =
                     actions::fetch_backup_bytes(&RestoreSource::Local, &sanitized, file_name).await?;
                 actions::extract_over(&bytes, &target)?;
-                Ok(format!("Restaurado (backup local, {file_name}) em {}", target.display()))
+                Ok(t!("tui.restored_local", file_name = file_name, path = target.display()).to_string())
             }
             GameAction::RestoreFromCloud => {
                 let provider = active_cloud_provider()?;
                 let (_, bytes) =
                     actions::fetch_backup_bytes(&RestoreSource::Cloud(provider), &sanitized, file_name).await?;
                 actions::extract_over(&bytes, &target)?;
-                Ok(format!("Restaurado (nuvem, {file_name}) em {}", target.display()))
+                Ok(t!("tui.restored_cloud", file_name = file_name, path = target.display()).to_string())
             }
         }
     }
@@ -407,7 +467,7 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, file_nam
 
     match outcome {
         Ok(msg) => format!("{warning}{msg}"),
-        Err(err) => format!("Erro: {err}"),
+        Err(err) => t!("tui.error_prefix", err = err).to_string(),
     }
 }
 
@@ -418,13 +478,8 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
         Mode::Table => {}
         Mode::ActionMenu { app_id, cursor } => {
             let title = game_title(games, *app_id);
-            let items: Vec<ListItem> = ACTIONS.iter().map(|(_, label)| ListItem::new(*label)).collect();
-            draw_menu_popup(
-                frame,
-                &format!(" {title} — escolha uma acao  ([Esc] cancelar) "),
-                items,
-                *cursor,
-            );
+            let items: Vec<ListItem> = ACTIONS.iter().map(|(_, key)| ListItem::new(t!(*key).to_string())).collect();
+            draw_menu_popup(frame, &t!("tui.action_menu_title", title = title).to_string(), items, *cursor);
         }
         Mode::PathChoice { app_id, paths, cursor, .. } => {
             let title = game_title(games, *app_id);
@@ -433,12 +488,7 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 .enumerate()
                 .map(|(i, p)| ListItem::new(format!("{i}: {}", p.display())))
                 .collect();
-            draw_menu_popup(
-                frame,
-                &format!(" {title} — qual pasta de save?  ([Esc] cancelar) "),
-                items,
-                *cursor,
-            );
+            draw_menu_popup(frame, &t!("tui.path_choice_title", title = title).to_string(), items, *cursor);
         }
         Mode::VersionChoice { app_id, versions, cursor, used_history, .. } => {
             let title = game_title(games, *app_id);
@@ -449,27 +499,25 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 .iter()
                 .map(|v| ListItem::new(actions::format_version_label(v, short_session_warning_secs)))
                 .collect();
-            let warning = if *used_history {
-                " — ⚠ pasta de save atual nao encontrada, alvo vem do historico"
-            } else {
-                ""
-            };
+            let warning = if *used_history { t!("tui.version_choice_warning").to_string() } else { String::new() };
             draw_menu_popup(
                 frame,
-                &format!(
-                    " {title} — qual versao restaurar? (mais recente marcada abaixo){warning}  ([Enter] escolher [Esc] cancelar) "
-                ),
+                &t!("tui.version_choice_title", title = title, warning = warning).to_string(),
                 items,
                 *cursor,
             );
         }
         Mode::Confirm { app_id, action, file_name, used_history, .. } => {
             let title = game_title(games, *app_id);
-            let label = ACTIONS.iter().find(|(a, _)| *a == *action).map(|(_, l)| *l).unwrap_or("?");
+            let label = ACTIONS
+                .iter()
+                .find(|(a, _)| *a == *action)
+                .map(|(_, key)| t!(*key).to_string())
+                .unwrap_or_else(|| "?".to_string());
             let history_warning = if *used_history {
-                "\n⚠ pasta de save atual NAO encontrada — alvo vem do historico (pode nao ser mais valido)\n"
+                t!("tui.confirm_history_warning").to_string()
             } else {
-                ""
+                String::new()
             };
             // Os comandos ficam no TITULO (nunca corta, e desenhado direto na
             // borda) alem do corpo — o corpo sozinho pode estourar a altura
@@ -477,12 +525,13 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
             // linha sem avisar, foi exatamente o bug que o usuario achou.
             draw_message_popup(
                 frame,
-                " Confirmar — [Enter]/[y] confirmar  [Esc]/[n] cancelar ",
-                &format!(
-                    "{title}\n\n{label}\n\nVersao: {file_name}\n\
-                     {history_warning}\n\
-                     Isso vai APAGAR o save atual do jogo.\n\n\
-                     [Enter] ou [y] confirmar   [Esc] ou [n] cancelar"
+                &t!("tui.confirm_title").to_string(),
+                &t!(
+                    "tui.confirm_body",
+                    title = title,
+                    label = label,
+                    file_name = file_name,
+                    history_warning = history_warning
                 ),
                 45,
             );
@@ -490,12 +539,38 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
         Mode::Info(message) => {
             draw_message_popup(
                 frame,
-                " PlaySync — [qualquer tecla] continuar ",
-                &format!("{message}\n\n(qualquer tecla continua)"),
+                &t!("tui.info_title").to_string(),
+                &format!("{message}{}", t!("tui.info_body_suffix")),
                 30,
             );
         }
+        Mode::Settings { cursor } => draw_settings(frame, *cursor),
     }
+}
+
+fn draw_settings(frame: &mut Frame, cursor: usize) {
+    let config = playsync_core::config::Config::load_or_default().unwrap_or_default();
+
+    let cloud_value = config
+        .cloud_provider
+        .clone()
+        .unwrap_or_else(|| t!("tui.settings.cloud_provider_none").to_string());
+    let auto_restore_value = if config.auto_restore_on_launch_effective() {
+        t!("tui.settings.state_on").to_string()
+    } else {
+        t!("tui.settings.state_off").to_string()
+    };
+    let current_locale = rust_i18n::locale().to_string();
+    let language_value = i18n::display_name(&current_locale).to_string();
+
+    let items = vec![
+        ListItem::new(format!("{}: {cloud_value}", t!("tui.settings.cloud_provider_label"))),
+        ListItem::new(format!("{}: {auto_restore_value}", t!("tui.settings.auto_restore_label"))),
+        ListItem::new(format!("{}: {language_value}", t!("tui.settings.language_label"))),
+    ];
+
+    let title = format!("{}{}", t!("tui.settings.title"), t!("tui.settings.hint"));
+    draw_menu_popup(frame, &title, items, cursor);
 }
 
 fn game_title(games: &[GameStatus], app_id: u32) -> String {
@@ -509,19 +584,19 @@ fn game_title(games: &[GameStatus], app_id: u32) -> String {
 fn draw_table(frame: &mut Frame, games: &[GameStatus], selected: usize) {
     let rows = games.iter().enumerate().map(|(i, g)| {
         let status = if !g.has_save_paths {
-            "⚠ sem save detectado"
+            t!("tui.table.no_save_detected")
         } else {
             match g.sync_status {
-                SyncStatus::NeverSynced => "nunca sincronizado",
-                SyncStatus::Idle => "em dia",
-                SyncStatus::Running => "sincronizando...",
-                SyncStatus::Error => "erro",
+                SyncStatus::NeverSynced => t!("cli.status.never_synced"),
+                SyncStatus::Idle => t!("cli.status.idle"),
+                SyncStatus::Running => t!("cli.status.running"),
+                SyncStatus::Error => t!("cli.status.error"),
             }
         };
         let last_backup = g
             .last_backup
             .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| "-".to_string());
+            .unwrap_or_else(|| t!("cli.status.none").to_string());
         let row = Row::new(vec![g.name.clone(), last_backup, status.to_string()]);
         if i == selected {
             row.style(Style::new().add_modifier(Modifier::REVERSED))
@@ -536,12 +611,16 @@ fn draw_table(frame: &mut Frame, games: &[GameStatus], selected: usize) {
         Constraint::Percentage(25),
     ];
 
-    let header = Row::new(vec!["Jogo", "Ultimo backup", "Status"])
-        .style(Style::new().add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        t!("tui.table.header_game").to_string(),
+        t!("tui.table.header_last_backup").to_string(),
+        t!("tui.table.header_status").to_string(),
+    ])
+    .style(Style::new().add_modifier(Modifier::BOLD));
 
     let table = Table::new(rows, widths).header(header).block(
         Block::default()
-            .title(" PlaySync — [↑↓] navegar  [Enter] acoes  [s] sync tudo  [r] atualizar  [q] sair ")
+            .title(t!("tui.table.title").to_string())
             .borders(Borders::ALL),
     );
 

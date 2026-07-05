@@ -39,6 +39,16 @@ pub struct Config {
     /// — sinal tipico de "abri o jogo sem save, so testei, fechei" em vez de
     /// progresso de verdade.
     pub short_session_warning_secs: i64,
+    /// Idioma da CLI/TUI (ex: "en", "pt-BR"). `None` detecta automaticamente
+    /// a partir do locale do sistema (`LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`),
+    /// caindo pra "en" se nao detectar ou o idioma nao for suportado.
+    pub language: Option<String>,
+    /// Restaura automaticamente o save da nuvem ao abrir um jogo, se ela tiver
+    /// uma versao mais recente que o backup local. `None` segue o default
+    /// dinamico (ligado somente se `cloud_provider` estiver configurado);
+    /// `Some(_)` e uma escolha explicita do usuario que tem prioridade sobre
+    /// isso (ex: desligar mesmo com nuvem configurada).
+    pub auto_restore_on_launch: Option<bool>,
 }
 
 impl Default for Config {
@@ -51,7 +61,20 @@ impl Default for Config {
             extra_save_paths: HashMap::new(),
             backup_versions_to_keep: 5,
             short_session_warning_secs: 120,
+            language: None,
+            auto_restore_on_launch: None,
         }
+    }
+}
+
+impl Config {
+    /// Se a restauracao automatica ao abrir o jogo esta efetivamente ligada:
+    /// respeita a escolha explicita do usuario (`auto_restore_on_launch`) se
+    /// houver, senao liga por padrao quando ha um `cloud_provider` configurado
+    /// (sem nuvem configurada nao ha de onde vir um save "mais recente").
+    pub fn auto_restore_on_launch_effective(&self) -> bool {
+        self.auto_restore_on_launch
+            .unwrap_or_else(|| self.cloud_provider.is_some())
     }
 }
 

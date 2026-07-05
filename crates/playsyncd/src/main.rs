@@ -57,6 +57,12 @@ async fn main() -> Result<()> {
                         tracing::info!(app_id, "jogo iniciado");
                         engine.mark_running(app_id).await;
                         engine.mark_session_started(app_id).await;
+                        // Em background: envolve rede (checar/baixar da nuvem),
+                        // nao deve atrasar o proximo evento do watcher.
+                        let auto_restore_engine = engine.clone();
+                        tokio::spawn(async move {
+                            auto_restore_engine.maybe_auto_restore_on_launch(app_id).await;
+                        });
                     }
                     Some(GameEvent::Stopped(app_id)) => {
                         let session_duration_secs = engine.take_session_duration_secs(app_id).await;

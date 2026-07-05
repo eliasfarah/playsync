@@ -220,6 +220,121 @@ impl SyncEngine {
         }
     }
 
+    /// Se `auto_restore_on_launch` estiver efetivamente ligado (ver
+    /// `Config::auto_restore_on_launch_effective`) e houver um provedor de
+    /// nuvem conectado, compara a versao mais recente de cada save_path do
+    /// jogo (local vs nuvem) e baixa+restaura automaticamente se a da nuvem
+    /// for mais nova — cobre o caso de ter jogado em outra maquina e a Steam
+    /// abrir aqui antes de qualquer sync local ter rodado.
+    ///
+    /// Best-effort: qualquer erro (rede, io) so loga e desiste por esse
+    /// save_path, nunca impede o jogo de abrir normalmente. Chamado a partir
+    /// de uma task separada (ver `main.rs`), entao roda em paralelo ao resto
+    /// do watcher — nao ha debounce aqui de proposito (diferente do sync no
+    /// fechamento): quanto mais cedo, maior a chance de vencer o jogo lendo
+    /// o save.
+    pub async fn maybe_auto_restore_on_launch(&self, app_id: u32) {
+        let config = self.config.lock().await.clone();
+        if !config.auto_restore_on_launch_effective() {
+            return;
+        }
+        let Some(provider) = config.cloud_provider.as_deref().and_then(parse_provider) else {
+            return;
+        };
+        let backend = cloud::backend_for(provider);
+        if !backend.is_connected() {
+            return;
+        }
+
+        let games = match steam::discover_games() {
+            Ok(games) => games,
+            Err(err) => {
+                tracing::warn!(%err, "auto-restore: falha ao listar jogos da Steam");
+                return;
+            }
+        };
+        let Some(game) = games.into_iter().find(|g| g.app_id == app_id) else {
+            return;
+        };
+        if game.save_paths.is_empty() {
+            return;
+        }
+
+        let sanitized = naming::sanitize(&game.name);
+        let local_root = match config.local_backup_root() {
+            Ok(root) => root,
+            Err(err) => {
+                tracing::warn!(%err, "auto-restore: nao consegui resolver a raiz do backup local");
+                return;
+            }
+        };
+        let total_paths = game.save_paths.len();
+        let remote_dir = format!("PlaySync/{sanitized}");
+        let local_dir = local_root.join(&sanitized);
+
+        for (idx, path) in game.save_paths.iter().enumerate() {
+            let prefix = versions::file_prefix(idx, total_paths);
+
+            let local_names: Vec<String> = std::fs::read_dir(&local_dir)
+                .map(|entries| entries.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
+                .unwrap_or_default();
+            let local_latest = versions::sort_versions(local_names, &prefix).pop();
+
+            let cloud_names = match backend.list_files(&remote_dir).await {
+                Ok(names) => names,
+                Err(err) => {
+                    tracing::warn!(%err, app_id, remote_dir, "auto-restore: falha ao listar versoes na nuvem");
+                    continue;
+                }
+            };
+            let Some(cloud_latest) = versions::sort_versions(cloud_names, &prefix).pop() else {
+                continue; // nada na nuvem pra esse save_path ainda
+            };
+
+            // Nomes de versao ordenam lexicograficamente = cronologicamente
+            // (ver `versions.rs`), entao comparar as strings direto ja diz
+            // qual e mais recente, sem precisar parsear timestamp.
+            let cloud_is_newer = local_latest.as_deref().is_none_or(|local| cloud_latest.as_str() > local);
+            if !cloud_is_newer {
+                continue;
+            }
+
+            let remote_path = format!("{remote_dir}/{cloud_latest}");
+            let bytes = match backend.download(&remote_path).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    tracing::warn!(%err, remote_path, "auto-restore: falha ao baixar versao mais recente da nuvem");
+                    continue;
+                }
+            };
+
+            let remove_result = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else if path.exists() {
+                std::fs::remove_file(path)
+            } else {
+                Ok(())
+            };
+            if let Err(err) = remove_result {
+                tracing::warn!(%err, path = %path.display(), "auto-restore: falha ao apagar save atual antes de restaurar");
+                continue;
+            }
+
+            let anchor = path.parent().unwrap_or(path);
+            if let Err(err) = archive::unzip_to(&bytes, anchor) {
+                tracing::warn!(%err, "auto-restore: falha ao extrair versao da nuvem");
+                continue;
+            }
+
+            tracing::info!(
+                app_id,
+                name = %game.name,
+                version = %cloud_latest,
+                "auto-restore: save da nuvem era mais recente, restaurado antes do jogo ler o save"
+            );
+        }
+    }
+
     pub async fn status_snapshot(&self) -> Vec<GameStatus> {
         let games = steam::discover_games().unwrap_or_default();
         let ignored = self.config.lock().await.ignored_app_ids.clone();
