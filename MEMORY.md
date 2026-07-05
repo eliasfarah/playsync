@@ -214,12 +214,17 @@ default dinamico).
    dominio proprio, etc.) — perguntei ao usuario como prosseguir, pergunta
    ainda EM ABERTO (nao respondida ate o fim desta sessao).
 
-**Commitado e empurrado pro GitHub** (`git push`, 2026-07-05): commit
+**Commitado, empurrado e publicado como release** (2026-07-05): commits
 `35b11f7` (i18n + auto-restore + tela de configuracoes + creditos ao
-Ludusavi no README) mais um segundo commit desta mesma sessao com a coluna
-de tamanho do save e o horario local nas versoes de restore (ver secoes
-acima). Nao publicado como release ainda (sem tag nova nem binarios/`.deb`
-atualizados no GitHub) — so codigo no branch `main`.
+Ludusavi no README), `ed1c1c2` (coluna de tamanho do save + horario local nas
+versoes de restore) e `89475ed` (bump de versao). Versao subida pra `0.4.0`
+(minor bump, mesmo criterio das vezes anteriores — features novas de
+verdade). `PKGBUILD` tambem teve o `pkgver` atualizado pra `0.4.0` (estava
+esquecido em `0.2.0` desde a v0.1.0, nao acompanhava as releases — corrigido
+de passagem, embora o bug conhecido do `makepkg` linkando continue sem
+solucao). Tag `v0.4.0` criada/empurrada, release publicado com tarball +
+`.deb` novos (binarios rebuilded em release, testes rodados antes).
+https://github.com/eliasfarah/playsync/releases/tag/v0.4.0
 
 
 
