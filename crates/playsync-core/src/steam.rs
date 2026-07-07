@@ -16,6 +16,14 @@ pub struct GameSave {
     /// Diretorios candidatos a conter saves (prefixo Proton e/ou espelho da Steam Cloud).
     /// Pode ficar vazio para jogos que guardam save em outro lugar (ainda nao suportado).
     pub save_paths: Vec<PathBuf>,
+    /// So preenchido quando `save_paths` vem vazio E o manifest da Ludusavi
+    /// documenta esse AppID: onde o save DEVERIA estar segundo o manifest,
+    /// mesmo que a pasta ainda nao exista no disco (jogo instalado mas nunca
+    /// aberto, ou maquina nova que nunca sincronizou esse jogo). Ultimo
+    /// fallback do restore (`actions::restore_candidate_paths`) pra alem do
+    /// historico local — ver `manifest::resolve_save_paths_for_restore`.
+    #[serde(default)]
+    pub restore_fallback_paths: Vec<PathBuf>,
 }
 
 /// Varre todas as bibliotecas Steam da maquina e retorna os jogos instalados
@@ -68,15 +76,34 @@ pub fn discover_games() -> Result<Vec<GameSave>> {
             // senao voltamos a fazer backup de config achando que e save.
             // So cai pra heuristica quando o manifest simplesmente nao tem
             // nenhuma entrada de `files` pro jogo (nada documentado ainda).
-            let mut save_paths = match manifest_index.get(&app.app_id) {
-                Some(entry) if !entry.files.is_empty() => crate::manifest::resolve_save_paths(
-                    entry,
-                    app.app_id,
-                    library.path(),
-                    steam_dir.path(),
-                    &install_dir,
-                ),
-                _ => find_save_candidates(&steam_dir, &library, &app),
+            let manifest_entry = manifest_index.get(&app.app_id).filter(|e| !e.files.is_empty());
+            let mut save_paths = match manifest_entry {
+                Some(entry) => {
+                    crate::manifest::resolve_save_paths(entry, app.app_id, library.path(), steam_dir.path(), &install_dir)
+                }
+                None => find_save_candidates(&steam_dir, &library, &app),
+            };
+
+            // So tenta o fallback "tolerante" (pasta ainda nao existe) quando
+            // a deteccao normal nao achou nada — ele faz globs extras, entao
+            // nao vale pagar esse custo no caso comum (jogo ja rodou e tem
+            // save de verdade). So funciona com manifest, nunca com a
+            // heuristica (`find_save_candidates`): sem `files` documentado
+            // nao ha template pra resolver, so tentativa e erro.
+            let restore_fallback_paths = if save_paths.is_empty() {
+                manifest_entry
+                    .map(|entry| {
+                        crate::manifest::resolve_save_paths_for_restore(
+                            entry,
+                            app.app_id,
+                            library.path(),
+                            steam_dir.path(),
+                            &install_dir,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
             };
 
             if let Some(extra) = extra_save_paths.get(&app.app_id.to_string()) {
@@ -92,6 +119,7 @@ pub fn discover_games() -> Result<Vec<GameSave>> {
                 name,
                 install_dir,
                 save_paths,
+                restore_fallback_paths,
             });
         }
     }

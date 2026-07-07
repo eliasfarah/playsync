@@ -6,6 +6,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use playsync_core::ipc::CloudProvider;
+use playsync_core::steam::GameSave;
 use rust_i18n::t;
 
 pub enum RestoreSource {
@@ -28,28 +29,37 @@ pub fn parse_source(source: &str) -> Result<RestoreSource> {
     }
 }
 
-/// Caminhos candidatos pra restaurar: os detectados ao vivo
-/// (`GameSave::save_paths`), ou — se vazio, o cenario mais importante pra
-/// `restore` existir, quando o save sumiu de verdade do disco e a deteccao
-/// ao vivo nao acha mais nada — o ultimo caminho conhecido, gravado no
-/// historico na hora do ultimo backup bem sucedido. O segundo valor indica
-/// se veio do historico (pra avisar o usuario, ja que o caminho pode nao
-/// existir mais no disco de verdade).
-pub fn restore_candidate_paths(app_id: u32, live_paths: &[std::path::PathBuf]) -> (Vec<std::path::PathBuf>, bool) {
-    if !live_paths.is_empty() {
-        return (live_paths.to_vec(), false);
+/// Caminhos candidatos pra restaurar, em ordem de preferencia:
+/// 1. Detectados ao vivo (`GameSave::save_paths`);
+/// 2. Se vazio — o save sumiu de verdade do disco e a deteccao ao vivo nao
+///    acha mais nada — o ultimo caminho conhecido, gravado no historico na
+///    hora do ultimo backup bem sucedido NESTA maquina;
+/// 3. Se o historico local tambem nao tem nada — maquina nova, que nunca
+///    sincronizou esse jogo (por isso a nuvem e a unica fonte real de
+///    versoes, mas sem saber pra onde restaurar nao tem como extrair nada)
+///    — o destino que o manifest da Ludusavi diz que o jogo *deveria* usar,
+///    mesmo sem existir ainda (`GameSave::restore_fallback_paths`).
+///
+/// O segundo valor indica se veio de (2) ou (3), nao de deteccao ao vivo
+/// (pra avisar o usuario, ja que o caminho pode nao existir de verdade no
+/// disco ainda).
+pub fn restore_candidate_paths(app_id: u32, game: &GameSave) -> (Vec<std::path::PathBuf>, bool) {
+    if !game.save_paths.is_empty() {
+        return (game.save_paths.clone(), false);
     }
-    let Ok(history) = playsync_core::db::HistoryDb::open_default() else {
-        return (Vec::new(), false);
-    };
-    let fallback = history
-        .last_backup(app_id)
-        .ok()
-        .flatten()
-        .map(|entry| entry.source_paths)
-        .unwrap_or_default();
-    let used_history = !fallback.is_empty();
-    (fallback, used_history)
+    if let Ok(history) = playsync_core::db::HistoryDb::open_default() {
+        let fallback = history
+            .last_backup(app_id)
+            .ok()
+            .flatten()
+            .map(|entry| entry.source_paths)
+            .unwrap_or_default();
+        if !fallback.is_empty() {
+            return (fallback, true);
+        }
+    }
+    let used_fallback = !game.restore_fallback_paths.is_empty();
+    (game.restore_fallback_paths.clone(), used_fallback)
 }
 
 /// Versoes existentes (nomes de arquivo, ordenadas da mais antiga pra mais

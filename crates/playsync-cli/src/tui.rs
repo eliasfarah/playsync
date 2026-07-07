@@ -77,7 +77,7 @@ enum Mode {
         path_index: usize,
         versions: Vec<actions::VersionInfo>,
         cursor: usize,
-        used_history: bool,
+        used_fallback: bool,
     },
     Confirm {
         app_id: u32,
@@ -85,10 +85,12 @@ enum Mode {
         path_index: usize,
         file_name: String,
         /// A pasta de save ao vivo nao foi encontrada — o alvo abaixo veio
-        /// do historico (ultimo backup bem sucedido), nao da deteccao atual.
-        /// Mostrado ANTES de confirmar (nao so depois, no resultado) pra dar
-        /// chance de cancelar sabendo disso.
-        used_history: bool,
+        /// do historico (ultimo backup bem sucedido nesta maquina) ou, na
+        /// falta desse, do local que o manifest da Ludusavi diz que o jogo
+        /// deveria usar (maquina nova, nunca sincronizou esse jogo). Mostrado
+        /// ANTES de confirmar (nao so depois, no resultado) pra dar chance
+        /// de cancelar sabendo disso.
+        used_fallback: bool,
     },
     Info(String),
     Settings {
@@ -233,7 +235,7 @@ pub async fn run() -> Result<()> {
                 _ => Mode::PathChoice { app_id, action, cursor, paths },
             },
 
-            Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_history } => {
+            Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_fallback } => {
                 match key.code {
                     KeyCode::Esc => Mode::Table,
                     KeyCode::Up | KeyCode::Char('k') => Mode::VersionChoice {
@@ -242,17 +244,17 @@ pub async fn run() -> Result<()> {
                         path_index,
                         cursor: cursor.saturating_sub(1),
                         versions,
-                        used_history,
+                        used_fallback,
                     },
                     KeyCode::Down | KeyCode::Char('j') => {
                         let cursor = (cursor + 1).min(versions.len().saturating_sub(1));
-                        Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_history }
+                        Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_fallback }
                     }
                     KeyCode::Enter => {
                         let file_name = versions[cursor].file_name.clone();
-                        confirm_or_run(app_id, action, path_index, file_name, used_history, &game_saves).await
+                        confirm_or_run(app_id, action, path_index, file_name, used_fallback, &game_saves).await
                     }
-                    _ => Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_history },
+                    _ => Mode::VersionChoice { app_id, action, path_index, cursor, versions, used_fallback },
                 }
             }
 
@@ -263,12 +265,12 @@ pub async fn run() -> Result<()> {
             // silencio, o que o usuario confundiu com "apertei Enter e nao
             // aconteceu nada" — Enter *parecia* ter cancelado, mas na
             // verdade nunca tinha confirmado nada pra comecar.
-            Mode::Confirm { app_id, action, path_index, file_name, used_history } => match key.code {
+            Mode::Confirm { app_id, action, path_index, file_name, used_fallback } => match key.code {
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
                     Mode::Info(run_action(app_id, action, path_index, &file_name, &game_saves).await)
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Mode::Table,
-                _ => Mode::Confirm { app_id, action, path_index, file_name, used_history },
+                _ => Mode::Confirm { app_id, action, path_index, file_name, used_fallback },
             },
 
             Mode::Info(_) => Mode::Table,
@@ -443,7 +445,7 @@ async fn choose_action(app_id: u32, action: GameAction, game_saves: &[GameSave])
         return Mode::Info(t!("tui.sync_triggered", name = game.name).to_string());
     }
 
-    let (paths, _) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let (paths, _) = actions::restore_candidate_paths(app_id, game);
     if paths.is_empty() {
         return Mode::Info(t!("cli.restore.no_save_path", name = game.name).to_string());
     }
@@ -476,7 +478,7 @@ async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, g
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return Mode::Info(t!("tui.game_not_found", app_id = app_id).to_string());
     };
-    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let (paths, used_fallback) = actions::restore_candidate_paths(app_id, game);
     let sanitized = playsync_core::naming::sanitize(&game.name);
     let paths_len = paths.len();
 
@@ -496,10 +498,10 @@ async fn after_path_chosen(app_id: u32, action: GameAction, path_index: usize, g
 
     if versions.len() == 1 {
         let file_name = versions[0].file_name.clone();
-        confirm_or_run(app_id, action, path_index, file_name, used_history, game_saves).await
+        confirm_or_run(app_id, action, path_index, file_name, used_fallback, game_saves).await
     } else {
         let cursor = versions.len() - 1; // comeca na mais recente
-        Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_history }
+        Mode::VersionChoice { app_id, action, path_index, versions, cursor, used_fallback }
     }
 }
 
@@ -512,11 +514,11 @@ async fn confirm_or_run(
     action: GameAction,
     path_index: usize,
     file_name: String,
-    used_history: bool,
+    used_fallback: bool,
     game_saves: &[GameSave],
 ) -> Mode {
     if is_destructive(action) {
-        Mode::Confirm { app_id, action, path_index, file_name, used_history }
+        Mode::Confirm { app_id, action, path_index, file_name, used_fallback }
     } else {
         Mode::Info(run_action(app_id, action, path_index, &file_name, game_saves).await)
     }
@@ -530,13 +532,13 @@ async fn run_action(app_id: u32, action: GameAction, path_index: usize, file_nam
     let Some(game) = game_saves.iter().find(|g| g.app_id == app_id) else {
         return t!("tui.game_not_found", app_id = app_id).to_string();
     };
-    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let (paths, used_fallback) = actions::restore_candidate_paths(app_id, game);
     let Some(target) = paths.get(path_index) else {
         return t!("tui.invalid_path_index", path_index = path_index).to_string();
     };
     let target = target.clone();
     let sanitized = playsync_core::naming::sanitize(&game.name);
-    let warning = if used_history {
+    let warning = if used_fallback {
         t!("tui.history_fallback_prefix").to_string()
     } else {
         String::new()
@@ -601,7 +603,7 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 .collect();
             draw_menu_popup(frame, &t!("tui.path_choice_title", title = title).to_string(), items, *cursor);
         }
-        Mode::VersionChoice { app_id, versions, cursor, used_history, .. } => {
+        Mode::VersionChoice { app_id, versions, cursor, used_fallback, .. } => {
             let title = game_title(games, *app_id);
             let short_session_warning_secs = playsync_core::config::Config::load_or_default()
                 .map(|c| c.short_session_warning_secs)
@@ -610,7 +612,7 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 .iter()
                 .map(|v| ListItem::new(actions::format_version_label(v, short_session_warning_secs)))
                 .collect();
-            let warning = if *used_history { t!("tui.version_choice_warning").to_string() } else { String::new() };
+            let warning = if *used_fallback { t!("tui.version_choice_warning").to_string() } else { String::new() };
             draw_menu_popup(
                 frame,
                 &t!("tui.version_choice_title", title = title, warning = warning).to_string(),
@@ -618,14 +620,14 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
                 *cursor,
             );
         }
-        Mode::Confirm { app_id, action, file_name, used_history, .. } => {
+        Mode::Confirm { app_id, action, file_name, used_fallback, .. } => {
             let title = game_title(games, *app_id);
             let label = ACTIONS
                 .iter()
                 .find(|(a, _)| *a == *action)
                 .map(|(_, key)| t!(*key).to_string())
                 .unwrap_or_else(|| "?".to_string());
-            let history_warning = if *used_history {
+            let history_warning = if *used_fallback {
                 t!("tui.confirm_history_warning").to_string()
             } else {
                 String::new()

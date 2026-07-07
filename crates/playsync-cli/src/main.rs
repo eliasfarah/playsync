@@ -370,11 +370,11 @@ async fn restore(
         .find(|g| g.app_id == app_id)
         .with_context(|| t!("cli.restore.game_not_found", app_id = app_id).to_string())?;
 
-    let (paths, used_history) = actions::restore_candidate_paths(app_id, &game.save_paths);
+    let (paths, used_fallback) = actions::restore_candidate_paths(app_id, &game);
     if paths.is_empty() {
         bail!(t!("cli.restore.no_save_path", name = game.name));
     }
-    if used_history {
+    if used_fallback {
         println!("{}", t!("cli.restore.used_history_warning", name = game.name));
     }
 

@@ -1220,3 +1220,72 @@ producao" ou sugerir empacotar, rodar o cenario real de ponta a ponta e
 mostrar a evidencia (logs, output de verdade, `playsync history`) — os bugs
 anteriores nao davam erro nenhum, so "nao acontece nada" ou uma falha
 silenciosa no historico.
+
+## Restore em maquina nova (nunca sincronizou esse jogo): RESOLVIDO (2026-07-07)
+
+Usuario percebeu: a opcao "restaurar da nuvem" so checava fontes LOCAIS antes
+de sequer consultar a nuvem — `restore_candidate_paths` (`actions.rs`) so
+sabia de dois lugares pra achar o caminho de destino: deteccao ao vivo
+(`GameSave::save_paths`, que so entra o que ja existe no disco — ver
+`glob_matches` no modulo `manifest`) e o historico local em SQLite (so tem
+entrada se ESSA maquina ja fez backup desse jogo antes). Numa maquina nova
+(jogo instalado, pasta de save ainda inexistente porque nunca rodou, nunca
+sincronizado dali), os dois ficam vazios e a tela mostra "sem pasta de save
+conhecida" ANTES de sequer perguntar pra nuvem — ou seja, `restore` nunca
+conseguia puxar a nuvem no cenario onde ela e a UNICA fonte de verdade.
+
+**Fix, 3 partes:**
+1. `manifest::glob_matches_for_restore` (novo, ao lado do `glob_matches`
+   existente): resolve o destino de restore tolerando que a pasta ainda nao
+   exista. Sem coringa no template, usa o caminho literal mesmo sem existir
+   (`extract_over` ja cria o que falta). Com um coringa (o caso comum:
+   `<storeUserId>` no espelho da Steam Cloud, `<root>/userdata/<storeUserId>/
+   <appid>/remote`), resolve contra o disco de verdade: se EXATAMENTE uma
+   pasta bate (`userdata/<steamid>` existe assim que a conta loga na Steam,
+   independente do jogo especifico ter rodado), usa ela; zero ou mais de uma
+   (ambiguo) = desiste, sem adivinhar. `resolve_save_paths_for_restore`
+   (publica) usa essa estrategia; `resolve_save_paths` (deteccao ao vivo,
+   inalterada) continua exigindo existencia real.
+2. `GameSave` ganhou `restore_fallback_paths` (so preenchido quando
+   `save_paths` vem vazio E o manifest documenta esse AppID — custo extra so
+   no caso raro, no comum nem roda).
+3. `restore_candidate_paths` virou 3 niveis: ao vivo -> historico local ->
+   `restore_fallback_paths`. Assinatura mudou de `(app_id, &[PathBuf])` pra
+   `(app_id, &GameSave)` (precisa dos dois campos agora). `used_history: bool`
+   renomeado pra `used_fallback` (nao e mais so historico) nos 3 call sites
+   da TUI + no comando `restore` da CLI; textos de aviso (8 idiomas:
+   `used_history_warning`, `history_fallback_prefix`,
+   `version_choice_warning`, `confirm_history_warning`) generalizados pra
+   nao dizer especificamente "vem do historico" quando pode ser o palpite do
+   manifest.
+
+**Validado ao vivo, de ponta a ponta, com `$HOME` isolado (nao mexeu na
+biblioteca Steam real nem em nenhum save de verdade):** forjado um Steam
+falso completo num diretorio temporario (`libraryfolders.vdf` +
+`appmanifest_9999999.acf` apontando appid 9999999 "Fake Test Game",
+`userdata/<um-steamid>/` existindo mas SEM a subpasta `9999999/remote` —
+exatamente "conta logada, jogo nunca rodado") + cache do manifest da
+Ludusavi escrito na mao com uma entrada `<root>/userdata/<storeUserId>/
+9999999/remote` tag `save` + um backup fake em `~/PlaySync/Fake Test Game/
+save-20260101T000000Z.zip`. Rodando `playsync restore --source local` com
+esse `$HOME`:
+- **Antes do fix** (comportamento documentado, nao testado de novo): teria
+  falhado com "sem pasta de save conhecida" sem nem listar a versao local.
+- **Depois do fix**: `--list-versions` lista a versao (com o aviso de
+  "usando local alternativo"); `--yes` restaura de verdade, criando
+  `userdata/<steamid>/9999999/remote/marker.txt` com o conteudo esperado do
+  zip fake.
+- **Caso ambiguo** (2 pastas `userdata/<id>` na maquina falsa): confirmado
+  que volta a falhar com "sem pasta de save conhecida" em vez de chutar uma
+  das duas — a rede de seguranca funciona.
+- `cargo test --workspace` (37 + 2 testes, incluindo 5 novos pra
+  `glob_matches_for_restore`) e `playsync status` na maquina real (biblioteca
+  de verdade, jogos ja sincronizados) confirmados sem regressao.
+
+**Gap conhecido, nao resolvido:** o mesmo fallback nao ajuda jogos que
+dependem do prefixo Proton (`compatdata/<appid>/pfx/...`, criado so quando o
+jogo roda ao menos uma vez via Proton) — nesse caso `has_proton_prefix`
+continua exigindo o prefixo existir, entao um jogo Windows-only nunca aberto
+nesta maquina ainda nao tem restore-antes-de-jogar. So afeta jogos cujo save
+so existe do lado Proton (nao Linux nativo) E que tambem nao usam o espelho
+da Steam Cloud.

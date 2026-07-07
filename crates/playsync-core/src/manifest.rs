@@ -266,6 +266,55 @@ fn glob_matches(pattern: &str) -> Vec<PathBuf> {
     }
 }
 
+/// Como `glob_matches`, mas pra descobrir o destino de um restore, nao pra
+/// listar saves reais: nunca temos a garantia de que a pasta ja existe (jogo
+/// instalado mas nunca aberto, ou instalado agora numa maquina que nunca
+/// sincronizou esse jogo — exatamente o caso em que restaurar da nuvem
+/// precisa funcionar). So resolve o que da pra fixar sem chutar:
+/// 1. Se ja existe alguma pasta batendo com o padrao, usa ela (igual
+///    `glob_matches` — preserva o comportamento de sempre quando a pasta
+///    esta la).
+/// 2. Sem padrao coringa (`<storeUserId>`/`<osUserName>`/`<language>` viram
+///    `*` na substituicao) sobrando no template, o caminho e literal — usa
+///    ele mesmo sem existir ainda (`extract_over` cria o que faltar).
+/// 3. Com um unico segmento coringa (o caso comum: espelho da Steam Cloud,
+///    `<root>/userdata/<storeUserId>/...` — a pasta userdata/<id> existe
+///    assim que a conta Steam loga, independente do jogo especifico ter
+///    rodado), resolve o coringa contra o disco de verdade: se exatamente
+///    UMA pasta bate, junta com o resto do template (que pode nao existir
+///    ainda). Zero ou mais de uma pasta batendo (ambiguo) = desiste, melhor
+///    nao restaurar no lugar errado do que adivinhar.
+fn glob_matches_for_restore(pattern: &str) -> Vec<PathBuf> {
+    let existing = glob_matches(pattern);
+    if !existing.is_empty() {
+        return existing;
+    }
+    if !pattern.contains('*') {
+        return vec![PathBuf::from(pattern)];
+    }
+
+    let Some(star_idx) = pattern.find('*') else {
+        return Vec::new();
+    };
+    let seg_end = pattern[star_idx..].find('/').map(|i| star_idx + i).unwrap_or(pattern.len());
+    let glob_segment = &pattern[..seg_end];
+    let rest = pattern[seg_end..].trim_start_matches('/');
+
+    if rest.contains('*') {
+        // Mais de um segmento coringa no template — resolver o primeiro nao
+        // elimina a ambiguidade do resto, entao nao vale a pena tentar.
+        return Vec::new();
+    }
+
+    match glob_matches(glob_segment).as_slice() {
+        [only] => {
+            let dest = if rest.is_empty() { only.clone() } else { only.join(rest) };
+            vec![dest]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Caminhos de save (so entradas com `tags: [save, ...]`) que a entrada do
 /// manifest aponta pra esse AppID, resolvidos nesta maquina.
 ///
@@ -280,6 +329,36 @@ pub fn resolve_save_paths(
     library_path: &Path,
     steam_root: &Path,
     install_dir: &Path,
+) -> Vec<PathBuf> {
+    resolve_save_paths_with(entry, app_id, library_path, steam_root, install_dir, glob_matches)
+}
+
+/// Mesma resolucao de `resolve_save_paths`, mas tolerando que a pasta ainda
+/// nao exista no disco — so usada como ultimo fallback de restore
+/// (`actions::restore_candidate_paths`), quando nem a deteccao ao vivo nem o
+/// historico local acham nada: o cenario de maquina nova, com o jogo
+/// instalado mas nunca aberto (ou nunca sincronizado a partir dela), que e
+/// justamente quando restaurar da nuvem precisa funcionar (ver
+/// `glob_matches_for_restore`). Pode voltar vazio mesmo com manifest, se o
+/// template tiver coringa ambiguo — restaurar no lugar errado e pior do que
+/// nao restaurar.
+pub fn resolve_save_paths_for_restore(
+    entry: &ManifestEntry,
+    app_id: u32,
+    library_path: &Path,
+    steam_root: &Path,
+    install_dir: &Path,
+) -> Vec<PathBuf> {
+    resolve_save_paths_with(entry, app_id, library_path, steam_root, install_dir, glob_matches_for_restore)
+}
+
+fn resolve_save_paths_with(
+    entry: &ManifestEntry,
+    app_id: u32,
+    library_path: &Path,
+    steam_root: &Path,
+    install_dir: &Path,
+    resolve: impl Fn(&str) -> Vec<PathBuf>,
 ) -> Vec<PathBuf> {
     let prefix_user_dir = library_path
         .join("steamapps/compatdata")
@@ -298,12 +377,12 @@ pub fn resolve_save_paths(
             if let Some(pattern) =
                 substitute_proton(template, &prefix_user_dir, steam_root, install_dir, app_id)
             {
-                results.extend(glob_matches(&pattern));
+                results.extend(resolve(&pattern));
             }
         }
         if linux_ok {
             if let Some(pattern) = substitute_linux(template, steam_root, install_dir, app_id) {
-                results.extend(glob_matches(&pattern));
+                results.extend(resolve(&pattern));
             }
         }
     }
@@ -405,5 +484,58 @@ mod tests {
             1
         )
         .is_none());
+    }
+
+    #[test]
+    fn glob_matches_for_restore_prefers_an_existing_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let save_dir = tmp.path().join("Game");
+        fs::create_dir(&save_dir).unwrap();
+        let pattern = save_dir.to_string_lossy().into_owned();
+        assert_eq!(glob_matches_for_restore(&pattern), vec![save_dir]);
+    }
+
+    #[test]
+    fn glob_matches_for_restore_returns_literal_path_when_nothing_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("never-launched/save");
+        let pattern = missing.to_string_lossy().into_owned();
+        assert_eq!(glob_matches_for_restore(&pattern), vec![missing]);
+    }
+
+    #[test]
+    fn glob_matches_for_restore_resolves_single_wildcard_ancestor() {
+        // Cenario real: `<root>/userdata/<storeUserId>/<appid>/remote` — a
+        // pasta `userdata/<id>` ja existe (criada no login da Steam), a
+        // subpasta especifica do jogo ainda nao (nunca rodou).
+        let tmp = tempfile::tempdir().unwrap();
+        let userdata = tmp.path().join("userdata");
+        fs::create_dir(&userdata).unwrap();
+        fs::create_dir(userdata.join("76561198000000001")).unwrap();
+        let pattern = format!("{}/*/234140/remote", userdata.to_string_lossy());
+        assert_eq!(
+            glob_matches_for_restore(&pattern),
+            vec![userdata.join("76561198000000001").join("234140/remote")]
+        );
+    }
+
+    #[test]
+    fn glob_matches_for_restore_refuses_to_guess_on_ambiguous_wildcard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let userdata = tmp.path().join("userdata");
+        fs::create_dir(&userdata).unwrap();
+        fs::create_dir(userdata.join("11111")).unwrap();
+        fs::create_dir(userdata.join("22222")).unwrap();
+        let pattern = format!("{}/*/234140/remote", userdata.to_string_lossy());
+        assert!(glob_matches_for_restore(&pattern).is_empty());
+    }
+
+    #[test]
+    fn glob_matches_for_restore_refuses_to_guess_with_no_wildcard_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let userdata = tmp.path().join("userdata");
+        fs::create_dir(&userdata).unwrap();
+        let pattern = format!("{}/*/234140/remote", userdata.to_string_lossy());
+        assert!(glob_matches_for_restore(&pattern).is_empty());
     }
 }
