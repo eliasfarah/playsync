@@ -27,6 +27,15 @@ cli:
     not_connected: "まだ接続されていません — 先に `playsync cloud connect %{provider}` を実行してください"
     test_upload_done: "テストアップロードが完了しました — drive.google.com（または Box）を確認してください"
     unknown_provider: "不明なプロバイダーです: %{other}（`google-drive` または `box` を使用してください）"
+    setup:
+      intro_google: "https://console.cloud.google.com/apis/credentials で OAuth クライアント ID（種類は「デスクトップ アプリ」）を作成し、http://localhost:8085 をリダイレクト URI として追加してください — Client ID と Client Secret は同じページに表示されます"
+      intro_box: "https://app.box.com/developers/console で「User Authentication (OAuth 2.0)」を有効にした Custom App を作成し、http://localhost:8086 をリダイレクト URI として追加してください — Client ID と Client Secret はアプリの Configuration タブにあります"
+      prompt_client_id: "Client ID: "
+      prompt_client_secret: "Client Secret: "
+      empty_client_id: "Client ID を空にすることはできません"
+      empty_client_secret: "Client Secret を空にすることはできません"
+      saved: "認証情報を保存しました"
+      next_step: "認可するには `playsync cloud connect %{provider}` を実行してください"
   restore:
     game_not_found: "AppID %{app_id} のゲームが見つかりません（`playsync status` を参照）"
     no_save_path: "「%{name}」に既知のセーブフォルダがありません（現在の状態にも、バックアップ履歴にもありません）"
@@ -96,4 +105,10 @@ tui:
     state_on: "オン"
     state_off: "オフ"
     language_label: "言語"
+    credentials_label: "クラウド認証情報を設定 (Client ID/Secret)"
     hint: " [Enter] 変更  [↑↓] 移動  [Esc] 戻る "
+  credentials:
+    provider_choice_title: " プロバイダーを選択  ([Esc] キャンセル) "
+    input_title: " %{provider} の認証情報 — [Enter] 次のフィールド/保存  [Backspace] 削除  [Esc] キャンセル "
+    body: "%{id_marker}Client ID: %{client_id}\n%{secret_marker}Client Secret: %{client_secret}"
+    saved: "%{provider} の認証情報を保存しました"

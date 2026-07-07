@@ -94,17 +94,49 @@ enum Mode {
     Settings {
         cursor: usize,
     },
+    /// Escolha de provedor antes de digitar as credenciais (`SETTINGS_CREDENTIALS_ROW`).
+    CredentialsProviderChoice {
+        cursor: usize,
+    },
+    /// Campo de texto livre pra Client ID/Secret — unico lugar da TUI que
+    /// aceita digitacao arbitraria (o resto e tudo lista/toggle). Client
+    /// Secret e mascarado na tela (ver `draw_credentials_input`), guardado
+    /// em texto puro so em memoria ate o `[Enter]` final gravar no arquivo.
+    CredentialsInput {
+        provider: CloudProvider,
+        field: CredentialField,
+        client_id: String,
+        client_secret: String,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CredentialField {
+    ClientId,
+    ClientSecret,
 }
 
 /// Linhas da tela de configuracoes, na ordem mostrada.
-const SETTINGS_ROWS: usize = 3;
+const SETTINGS_ROWS: usize = 4;
 const SETTINGS_CLOUD_ROW: usize = 0;
 const SETTINGS_AUTO_RESTORE_ROW: usize = 1;
 const SETTINGS_LANGUAGE_ROW: usize = 2;
+const SETTINGS_CREDENTIALS_ROW: usize = 3;
 
 /// Provedores que o `[Enter]` na linha de nuvem cicla entre si (`None` inclusive,
 /// pra permitir desativar a nuvem sem editar o config.toml na mao).
 const CYCLABLE_PROVIDERS: &[Option<&str>] = &[None, Some("google-drive"), Some("box")];
+
+/// Provedores oferecidos em `CredentialsProviderChoice` (sem o `None` do
+/// ciclo acima — aqui sempre estamos configurando um provedor especifico).
+const CREDENTIAL_PROVIDERS: &[CloudProvider] = &[CloudProvider::GoogleDrive, CloudProvider::Box];
+
+fn provider_slug(provider: CloudProvider) -> &'static str {
+    match provider {
+        CloudProvider::GoogleDrive => "google-drive",
+        CloudProvider::Box => "box",
+    }
+}
 
 pub async fn run() -> Result<()> {
     let mut games = fetch_status().await.unwrap_or_default();
@@ -247,11 +279,71 @@ pub async fn run() -> Result<()> {
                 KeyCode::Down | KeyCode::Char('j') => {
                     Mode::Settings { cursor: (cursor + 1).min(SETTINGS_ROWS - 1) }
                 }
+                KeyCode::Enter if cursor == SETTINGS_CREDENTIALS_ROW => {
+                    Mode::CredentialsProviderChoice { cursor: 0 }
+                }
                 KeyCode::Enter => {
                     apply_settings_action(cursor);
                     Mode::Settings { cursor }
                 }
                 _ => Mode::Settings { cursor },
+            },
+
+            Mode::CredentialsProviderChoice { cursor } => match key.code {
+                KeyCode::Esc => Mode::Settings { cursor: SETTINGS_CREDENTIALS_ROW },
+                KeyCode::Up | KeyCode::Char('k') => {
+                    Mode::CredentialsProviderChoice { cursor: cursor.saturating_sub(1) }
+                }
+                KeyCode::Down | KeyCode::Char('j') => Mode::CredentialsProviderChoice {
+                    cursor: (cursor + 1).min(CREDENTIAL_PROVIDERS.len() - 1),
+                },
+                KeyCode::Enter => Mode::CredentialsInput {
+                    provider: CREDENTIAL_PROVIDERS[cursor],
+                    field: CredentialField::ClientId,
+                    client_id: String::new(),
+                    client_secret: String::new(),
+                },
+                _ => Mode::CredentialsProviderChoice { cursor },
+            },
+
+            // Campo de texto: Backspace/caracteres normais editam o campo
+            // ativo, Enter avanca pro proximo campo (ou salva, no ultimo),
+            // Esc cancela sem gravar nada. Client ID/Secret vazios (so
+            // espaco) nao avancam — sem validacao alem disso, o backend so
+            // vai falhar na autenticacao se o valor estiver errado.
+            Mode::CredentialsInput { provider, field, mut client_id, mut client_secret } => match key.code {
+                KeyCode::Esc => Mode::Settings { cursor: SETTINGS_CREDENTIALS_ROW },
+                KeyCode::Backspace => {
+                    match field {
+                        CredentialField::ClientId => {
+                            client_id.pop();
+                        }
+                        CredentialField::ClientSecret => {
+                            client_secret.pop();
+                        }
+                    }
+                    Mode::CredentialsInput { provider, field, client_id, client_secret }
+                }
+                KeyCode::Enter => match field {
+                    CredentialField::ClientId if !client_id.trim().is_empty() => Mode::CredentialsInput {
+                        provider,
+                        field: CredentialField::ClientSecret,
+                        client_id,
+                        client_secret,
+                    },
+                    CredentialField::ClientSecret if !client_secret.trim().is_empty() => {
+                        Mode::Info(save_credentials(provider, &client_id, &client_secret))
+                    }
+                    _ => Mode::CredentialsInput { provider, field, client_id, client_secret },
+                },
+                KeyCode::Char(c) => {
+                    match field {
+                        CredentialField::ClientId => client_id.push(c),
+                        CredentialField::ClientSecret => client_secret.push(c),
+                    }
+                    Mode::CredentialsInput { provider, field, client_id, client_secret }
+                }
+                _ => Mode::CredentialsInput { provider, field, client_id, client_secret },
             },
         };
 
@@ -317,6 +409,25 @@ fn apply_settings_action(cursor: usize) {
         _ => {}
     }
     let _ = config.save();
+}
+
+/// Grava o client_id/client_secret digitados no `CredentialsInput` (mesma
+/// escrita que `playsync cloud setup` faz na CLI, so que via TUI). So depois
+/// disso o `playsync cloud connect` (fora da TUI por enquanto) consegue
+/// autorizar de fato.
+fn save_credentials(provider: CloudProvider, client_id: &str, client_secret: &str) -> String {
+    let result = match provider {
+        CloudProvider::GoogleDrive => {
+            playsync_core::cloud::gdrive::save_client_credentials(client_id.trim(), client_secret.trim())
+        }
+        CloudProvider::Box => {
+            playsync_core::cloud::box_com::save_client_credentials(client_id.trim(), client_secret.trim())
+        }
+    };
+    match result {
+        Ok(()) => t!("tui.credentials.saved", provider = provider_slug(provider)).to_string(),
+        Err(err) => t!("tui.error_prefix", err = err).to_string(),
+    }
 }
 
 /// Decide o proximo passo depois que uma acao foi escolhida no menu: dispara
@@ -545,7 +656,32 @@ fn draw(frame: &mut Frame, games: &[GameStatus], selected: usize, mode: &Mode) {
             );
         }
         Mode::Settings { cursor } => draw_settings(frame, *cursor),
+        Mode::CredentialsProviderChoice { cursor } => {
+            let items: Vec<ListItem> = CREDENTIAL_PROVIDERS
+                .iter()
+                .map(|p| ListItem::new(provider_slug(*p)))
+                .collect();
+            draw_menu_popup(frame, &t!("tui.credentials.provider_choice_title").to_string(), items, *cursor);
+        }
+        Mode::CredentialsInput { provider, field, client_id, client_secret } => {
+            draw_credentials_input(frame, *provider, *field, client_id, client_secret);
+        }
     }
+}
+
+fn draw_credentials_input(frame: &mut Frame, provider: CloudProvider, field: CredentialField, client_id: &str, client_secret: &str) {
+    let masked_secret = "*".repeat(client_secret.chars().count());
+    let id_marker = if field == CredentialField::ClientId { "> " } else { "  " };
+    let secret_marker = if field == CredentialField::ClientSecret { "> " } else { "  " };
+    let body = t!(
+        "tui.credentials.body",
+        id_marker = id_marker,
+        client_id = client_id,
+        secret_marker = secret_marker,
+        client_secret = masked_secret
+    );
+    let title = t!("tui.credentials.input_title", provider = provider_slug(provider));
+    draw_message_popup(frame, &title.to_string(), &body, 35);
 }
 
 fn draw_settings(frame: &mut Frame, cursor: usize) {
@@ -567,6 +703,7 @@ fn draw_settings(frame: &mut Frame, cursor: usize) {
         ListItem::new(format!("{}: {cloud_value}", t!("tui.settings.cloud_provider_label"))),
         ListItem::new(format!("{}: {auto_restore_value}", t!("tui.settings.auto_restore_label"))),
         ListItem::new(format!("{}: {language_value}", t!("tui.settings.language_label"))),
+        ListItem::new(t!("tui.settings.credentials_label").to_string()),
     ];
 
     let title = format!("{}{}", t!("tui.settings.title"), t!("tui.settings.hint"));

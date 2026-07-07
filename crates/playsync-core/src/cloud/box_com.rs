@@ -594,6 +594,29 @@ fn client_secret_path() -> Result<PathBuf> {
         .join("box_client_secret.json"))
 }
 
+/// Escreve `client_id`/`client_secret` no formato que [`BoxClientCredentials::load`]
+/// espera, pra quem prefere colar as credenciais em vez de montar o JSON na
+/// mao (ver `playsync cloud setup box`).
+pub fn save_client_credentials(client_id: &str, client_secret: &str) -> Result<()> {
+    let path = client_secret_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let contents = serde_json::json!({
+        "client_id": client_id,
+        "client_secret": client_secret,
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&contents)?)
+        .with_context(|| format!("nao consegui escrever {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn token_path() -> Result<PathBuf> {
     Ok(Config::config_path()?
         .parent()

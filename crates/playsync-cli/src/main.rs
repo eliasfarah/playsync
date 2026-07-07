@@ -71,6 +71,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum CloudCommand {
+    /// Interactively save the OAuth client ID/secret for `google-drive` or
+    /// `box`, instead of creating the credentials file by hand.
+    Setup {
+        provider: String,
+        /// Skip the prompt and use this Client ID directly (e.g. for scripted setups).
+        #[arg(long)]
+        client_id: Option<String>,
+        /// Skip the prompt and use this Client Secret directly (e.g. for scripted setups).
+        #[arg(long)]
+        client_secret: Option<String>,
+    },
     /// Authorize PlaySync to access `google-drive` or `box`.
     Connect { provider: String },
     /// Sends a test zip (empty, generated on the fly) to the connected
@@ -114,6 +125,9 @@ async fn main() -> Result<()> {
         Some(Command::Sync { app_id }) => sync_now(app_id).await,
         Some(Command::History { limit }) => print_history(limit).await,
         Some(Command::Cloud { action }) => match action {
+            CloudCommand::Setup { provider, client_id, client_secret } => {
+                cloud_setup(&provider, client_id, client_secret).await
+            }
             CloudCommand::Connect { provider } => cloud_connect(&provider).await,
             CloudCommand::TestUpload { provider } => cloud_test_upload(&provider).await,
         },
@@ -233,6 +247,66 @@ async fn set_language(code: &str) -> Result<()> {
     config.save()?;
     rust_i18n::set_locale(code);
     println!("{}", t!("cli.config.language_set", language = i18n::display_name(code)));
+    Ok(())
+}
+
+/// Salva o client_id/client_secret do provedor sem o usuario precisar montar
+/// o JSON na mao — pede interativamente (secret mascarado) quando as flags
+/// nao sao passadas. So grava as credenciais; a autorizacao em si continua
+/// sendo um passo separado (`playsync cloud connect`), mesma separacao que
+/// ja existe entre "conectar" e "test-upload".
+async fn cloud_setup(
+    provider: &str,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+) -> Result<()> {
+    let parsed_provider = actions::parse_provider(provider)?;
+
+    let intro_key = match parsed_provider {
+        CloudProvider::GoogleDrive => "cli.cloud.setup.intro_google",
+        CloudProvider::Box => "cli.cloud.setup.intro_box",
+    };
+    println!("{}", t!(intro_key));
+
+    let client_id = match client_id {
+        Some(value) => value,
+        None => {
+            print!("{}", t!("cli.cloud.setup.prompt_client_id"));
+            std::io::Write::flush(&mut std::io::stdout())?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            input.trim().to_string()
+        }
+    };
+    if client_id.is_empty() {
+        bail!(t!("cli.cloud.setup.empty_client_id"));
+    }
+
+    let client_secret = match client_secret {
+        Some(value) => value,
+        None => rpassword::prompt_password(t!("cli.cloud.setup.prompt_client_secret").to_string())
+            .context("nao consegui ler o Client Secret do terminal")?
+            .trim()
+            .to_string(),
+    };
+    if client_secret.is_empty() {
+        bail!(t!("cli.cloud.setup.empty_client_secret"));
+    }
+
+    match parsed_provider {
+        CloudProvider::GoogleDrive => {
+            playsync_core::cloud::gdrive::save_client_credentials(&client_id, &client_secret)?
+        }
+        CloudProvider::Box => {
+            playsync_core::cloud::box_com::save_client_credentials(&client_id, &client_secret)?
+        }
+    }
+
+    println!("{}", t!("cli.cloud.setup.saved"));
+    println!(
+        "{}",
+        t!("cli.cloud.setup.next_step", provider = provider)
+    );
     Ok(())
 }
 

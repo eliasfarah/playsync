@@ -141,8 +141,15 @@ matching `pkgver`.)
 1. Create a project and an **OAuth client ID** of type *Desktop app* at
    [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
 2. Add `http://localhost:8085` as a redirect URI.
-3. Download the credentials JSON and save it as
-   `~/.config/playsync/gdrive_client_secret.json`.
+3. Save the Client ID/Secret with:
+   ```bash
+   playsync cloud setup google-drive
+   ```
+   Prompts for the Client ID and Client Secret (the secret isn't echoed) and
+   writes `~/.config/playsync/gdrive_client_secret.json` for you — or pass
+   `--client-id`/`--client-secret` to skip the prompts. Alternatively,
+   download the credentials JSON from the console and save it at that path
+   yourself.
 4. Connect:
    ```bash
    playsync cloud connect google-drive
@@ -156,8 +163,12 @@ matching `pkgver`.)
    [app.box.com/developers/console](https://app.box.com/developers/console)
    with "User Authentication (OAuth 2.0)".
 2. Add `http://localhost:8086` as a redirect URI.
-3. Save `client_id`/`client_secret` to
-   `~/.config/playsync/box_client_secret.json`:
+3. Save the Client ID/Secret with:
+   ```bash
+   playsync cloud setup box
+   ```
+   (same prompts/flags as above) — or write
+   `~/.config/playsync/box_client_secret.json` yourself:
    ```json
    { "client_id": "...", "client_secret": "..." }
    ```
@@ -175,7 +186,8 @@ Running `playsync` with no arguments opens an interactive TUI: navigate the
 game list with `↑↓`, press `Enter` on a game for a per-game action menu
 (sync now, download from cloud only, restore from local, or download +
 restore), `s` to sync everything, `r` to refresh, `c` for settings (cloud
-provider, auto-restore on launch, language), `q` to quit. Destructive
+provider, auto-restore on launch, language, and — from there — entering the
+Client ID/Secret for a provider), `q` to quit. Destructive
 actions (restoring over the live save) ask for confirmation first.
 
 Everything is also available non-interactively:
@@ -186,6 +198,7 @@ playsync sync                # force-sync all eligible games now
 playsync sync --app-id ID    # force-sync a single game (Steam AppID)
 playsync history             # recent backup history (success/failure, destination)
 playsync history --limit N   # history with a custom limit (default: 20)
+playsync cloud setup <google-drive|box>        # save the OAuth Client ID/Secret (prompts interactively)
 playsync cloud connect <google-drive|box>      # (re)authorize a provider
 playsync cloud test-upload <google-drive|box>  # sanity-check the OAuth2 + upload pipeline
 playsync restore --app-id ID --source <local|google-drive|box>  # restore a backup over the current save
@@ -427,8 +440,14 @@ correspondente a `pkgver`.)
 1. Crie um projeto e um **OAuth client ID** do tipo *Desktop app* em
    [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials).
 2. Adicione `http://localhost:8085` como redirect URI.
-3. Baixe o JSON de credenciais e salve em
-   `~/.config/playsync/gdrive_client_secret.json`.
+3. Salve o Client ID/Secret com:
+   ```bash
+   playsync cloud setup google-drive
+   ```
+   Pergunta o Client ID e o Client Secret (o secret não aparece na tela) e
+   grava `~/.config/playsync/gdrive_client_secret.json` pra você — ou passe
+   `--client-id`/`--client-secret` pra pular as perguntas. Também dá pra
+   baixar o JSON de credenciais do console e salvar nesse caminho na mão.
 4. Conecte:
    ```bash
    playsync cloud connect google-drive
@@ -442,8 +461,12 @@ correspondente a `pkgver`.)
    [app.box.com/developers/console](https://app.box.com/developers/console)
    com "User Authentication (OAuth 2.0)".
 2. Adicione `http://localhost:8086` como redirect URI.
-3. Salve `client_id`/`client_secret` em
-   `~/.config/playsync/box_client_secret.json`:
+3. Salve o Client ID/Secret com:
+   ```bash
+   playsync cloud setup box
+   ```
+   (mesmas perguntas/flags acima) — ou escreva
+   `~/.config/playsync/box_client_secret.json` na mão:
    ```json
    { "client_id": "...", "client_secret": "..." }
    ```
@@ -460,7 +483,8 @@ Rodar `playsync` sem argumentos abre uma TUI interativa: navega na lista de
 jogos com `↑↓`, aperta `Enter` num jogo pra abrir um menu de acoes (sincronizar
 agora, baixar da nuvem so pra local, restaurar do local, ou baixar da nuvem e
 restaurar), `s` sincroniza tudo, `r` atualiza, `c` abre as configurações
-(provedor de nuvem, restauração automática ao abrir, idioma), `q` sai. Acoes
+(provedor de nuvem, restauração automática ao abrir, idioma, e — dali —
+digitar o Client ID/Secret de um provedor), `q` sai. Acoes
 destrutivas (restaurar por cima do save atual) pedem confirmacao antes.
 
 Tudo tambem esta disponivel sem interatividade:
@@ -471,6 +495,7 @@ playsync sync                # forca sync de todos os jogos elegiveis agora
 playsync sync --app-id ID    # forca sync so de um jogo (AppID da Steam)
 playsync history             # historico recente de backups (sucesso/falha, destino)
 playsync history --limit N   # historico com um limite customizado (padrao: 20)
+playsync cloud setup <google-drive|box>        # salva o Client ID/Secret OAuth (pergunta interativamente)
 playsync cloud connect <google-drive|box>      # (re)autoriza um provedor
 playsync cloud test-upload <google-drive|box>  # valida o pipeline OAuth2 + upload
 playsync restore --app-id ID --source <local|google-drive|box>  # restaura um backup por cima do save atual

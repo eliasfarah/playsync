@@ -22,6 +22,8 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 
 clap = { version = "4", features = ["derive"] }
+# Le o Client Secret no `cloud setup` sem ecoar na tela (e um segredo).
+rpassword = "7"
 # Usamos `ratatui::crossterm` (re-exportado) em vez de uma dependencia
 # `crossterm` separada, pra nao arriscar duas versoes divergentes no grafo.
 ratatui = "0.30"

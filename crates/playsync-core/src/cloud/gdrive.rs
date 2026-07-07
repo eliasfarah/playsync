@@ -539,6 +539,35 @@ fn client_secret_path() -> Result<PathBuf> {
         .join("gdrive_client_secret.json"))
 }
 
+/// Escreve `client_id`/`client_secret` no formato que [`GdriveClientCredentials::load`]
+/// espera, pra quem prefere colar as credenciais em vez de baixar e posicionar
+/// manualmente o JSON do console (ver `playsync cloud setup google-drive`).
+/// `auth_uri`/`token_uri` sao sempre os mesmos endpoints fixos do Google — o
+/// JSON baixado do console tambem os traz, so nao ha por que pedir de volta.
+pub fn save_client_credentials(client_id: &str, client_secret: &str) -> Result<()> {
+    let path = client_secret_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let contents = serde_json::json!({
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&contents)?)
+        .with_context(|| format!("nao consegui escrever {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn token_path() -> Result<PathBuf> {
     Ok(Config::config_path()?
         .parent()

@@ -27,6 +27,15 @@ cli:
     not_connected: "尚未连接 — 请先运行 `playsync cloud connect %{provider}`"
     test_upload_done: "测试上传完成 — 请在 drive.google.com（或 Box）查看"
     unknown_provider: "未知的提供商：%{other}（请使用 `google-drive` 或 `box`）"
+    setup:
+      intro_google: "在 https://console.cloud.google.com/apis/credentials 创建一个 OAuth 客户端 ID（类型选择“Desktop app”），然后添加 http://localhost:8085 作为重定向 URI — Client ID 和 Client Secret 会显示在同一页面上"
+      intro_box: "在 https://app.box.com/developers/console 创建一个 Custom App 并启用“User Authentication (OAuth 2.0)”，然后添加 http://localhost:8086 作为重定向 URI — Client ID 和 Client Secret 位于该应用的 Configuration 标签页"
+      prompt_client_id: "Client ID: "
+      prompt_client_secret: "Client Secret: "
+      empty_client_id: "Client ID 不能为空"
+      empty_client_secret: "Client Secret 不能为空"
+      saved: "凭据已保存"
+      next_step: "运行 `playsync cloud connect %{provider}` 进行授权"
   restore:
     game_not_found: "未找到 AppID 为 %{app_id} 的游戏（参见 `playsync status`）"
     no_save_path: "“%{name}”没有已知的存档文件夹（实时检测和备份历史中都没有）"
@@ -96,4 +105,10 @@ tui:
     state_on: "开启"
     state_off: "关闭"
     language_label: "语言"
+    credentials_label: "配置云端凭据 (Client ID/Secret)"
     hint: " [Enter] 更改  [↑↓] 移动  [Esc] 返回 "
+  credentials:
+    provider_choice_title: " 选择提供商？ ([Esc] 取消) "
+    input_title: " %{provider} 凭据 — [Enter] 下一栏/保存  [Backspace] 删除  [Esc] 取消 "
+    body: "%{id_marker}Client ID: %{client_id}\n%{secret_marker}Client Secret: %{client_secret}"
+    saved: "已保存 %{provider} 的凭据"

@@ -27,6 +27,15 @@ cli:
     not_connected: "noch nicht verbunden — führe zuerst `playsync cloud connect %{provider}` aus"
     test_upload_done: "Test-Upload abgeschlossen — prüfe drive.google.com (oder Box)"
     unknown_provider: "unbekannter Anbieter: %{other} (nutze `google-drive` oder `box`)"
+    setup:
+      intro_google: "Erstelle eine OAuth-Client-ID (Typ „Desktop app“) unter https://console.cloud.google.com/apis/credentials und füge http://localhost:8085 als Redirect-URI hinzu — Client ID und Client Secret stehen auf derselben Seite"
+      intro_box: "Erstelle eine Custom App unter https://app.box.com/developers/console mit aktiviertem „User Authentication (OAuth 2.0)“ und füge http://localhost:8086 als Redirect-URI hinzu — Client ID und Client Secret findest du im Tab „Configuration“ der App"
+      prompt_client_id: "Client ID: "
+      prompt_client_secret: "Client Secret: "
+      empty_client_id: "Client ID darf nicht leer sein"
+      empty_client_secret: "Client Secret darf nicht leer sein"
+      saved: "Zugangsdaten gespeichert"
+      next_step: "führe `playsync cloud connect %{provider}` aus, um zu autorisieren"
   restore:
     game_not_found: "Spiel mit AppID %{app_id} nicht gefunden (siehe `playsync status`)"
     no_save_path: "\"%{name}\" hat keinen bekannten Speicherordner (weder live noch im Backup-Verlauf)"
@@ -96,4 +105,10 @@ tui:
     state_on: "AN"
     state_off: "AUS"
     language_label: "Sprache"
+    credentials_label: "Cloud-Zugangsdaten konfigurieren (Client ID/Secret)"
     hint: " [Enter] ändern  [↑↓] navigieren  [Esc] zurück "
+  credentials:
+    provider_choice_title: " Welcher Anbieter?  ([Esc] abbrechen) "
+    input_title: " %{provider}-Zugangsdaten — [Enter] nächstes Feld / speichern  [Backspace] löschen  [Esc] abbrechen "
+    body: "%{id_marker}Client ID: %{client_id}\n%{secret_marker}Client Secret: %{client_secret}"
+    saved: "Zugangsdaten für %{provider} gespeichert"

@@ -27,6 +27,15 @@ cli:
     not_connected: "ещё не подключено — сначала выполните `playsync cloud connect %{provider}`"
     test_upload_done: "тестовая загрузка завершена — проверьте на drive.google.com (или в Box)"
     unknown_provider: "неизвестный провайдер: %{other} (используйте `google-drive` или `box`)"
+    setup:
+      intro_google: "Создайте OAuth client ID (тип «Desktop app») на https://console.cloud.google.com/apis/credentials и добавьте http://localhost:8085 в качестве redirect URI — Client ID и Client Secret отображаются на той же странице"
+      intro_box: "Создайте Custom App на https://app.box.com/developers/console с включённым «User Authentication (OAuth 2.0)» и добавьте http://localhost:8086 в качестве redirect URI — Client ID и Client Secret находятся на вкладке Configuration приложения"
+      prompt_client_id: "Client ID: "
+      prompt_client_secret: "Client Secret: "
+      empty_client_id: "Client ID не может быть пустым"
+      empty_client_secret: "Client Secret не может быть пустым"
+      saved: "учётные данные сохранены"
+      next_step: "выполните `playsync cloud connect %{provider}` для авторизации"
   restore:
     game_not_found: "игра с AppID %{app_id} не найдена (см. `playsync status`)"
     no_save_path: "у «%{name}» нет известной папки сохранений (ни на диске, ни в истории резервных копий)"
@@ -96,4 +105,10 @@ tui:
     state_on: "ВКЛ"
     state_off: "ВЫКЛ"
     language_label: "Язык"
+    credentials_label: "Настроить учётные данные облака (Client ID/Secret)"
     hint: " [Enter] изменить  [↑↓] навигация  [Esc] назад "
+  credentials:
+    provider_choice_title: " Какой провайдер?  ([Esc] отмена) "
+    input_title: " Учётные данные %{provider} — [Enter] следующее поле / сохранить  [Backspace] удалить  [Esc] отмена "
+    body: "%{id_marker}Client ID: %{client_id}\n%{secret_marker}Client Secret: %{client_secret}"
+    saved: "учётные данные для %{provider} сохранены"
