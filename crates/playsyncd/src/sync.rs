@@ -367,11 +367,25 @@ impl SyncEngine {
                 } else {
                     Some(g.save_paths.iter().filter_map(|p| archive::path_size_bytes(p)).sum())
                 };
+                // Sem entrada em `status` (mapa em memoria, zerado toda vez
+                // que o daemon reinicia — atualizacao, crash, reboot) nao
+                // significa "nunca sincronizado": o historico persistido
+                // (`last_backup`, SQLite) pode ja ter um backup de verdade de
+                // antes do restart. So mostra `NeverSynced` quando o
+                // historico tambem nao tem nada — do contrario contradiz a
+                // propria coluna "ultimo backup" ao lado (bug real: usuario
+                // via TODOS os jogos ja sincronizados virarem "nunca
+                // sincronizado" so por eu ter reiniciado o daemon pra testar
+                // outra correcao).
+                let sync_status = status.get(&g.app_id).cloned().unwrap_or_else(|| {
+                    if last_backup.is_some() { SyncStatus::Idle } else { SyncStatus::NeverSynced }
+                });
+
                 GameStatus {
                     app_id: g.app_id,
                     name: g.name,
                     last_backup,
-                    sync_status: status.get(&g.app_id).cloned().unwrap_or(SyncStatus::NeverSynced),
+                    sync_status,
                     has_save_paths: !g.save_paths.is_empty(),
                     save_size_bytes,
                 }
