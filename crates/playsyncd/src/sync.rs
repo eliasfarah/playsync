@@ -234,6 +234,19 @@ impl SyncEngine {
     /// fechamento): quanto mais cedo, maior a chance de vencer o jogo lendo
     /// o save.
     pub async fn maybe_auto_restore_on_launch(&self, app_id: u32) {
+        self.try_auto_restore_on_launch(app_id).await;
+
+        // `main.rs` marca "sincronizando" (`mark_running`) ao ver o jogo
+        // abrir, pra cobrir esse check. Sem voltar pra `Idle` aqui no final —
+        // em TODOS os caminhos de saida do metodo acima, nao so o de sucesso
+        // — o status ficava preso em "sincronizando" pelo tempo inteiro que o
+        // jogo continuasse aberto, mesmo com o download/restore ja concluido
+        // (bug real: usuario via o download funcionar certinho, mas o status
+        // nunca saia de "sincronizando").
+        self.status.lock().await.insert(app_id, SyncStatus::Idle);
+    }
+
+    async fn try_auto_restore_on_launch(&self, app_id: u32) {
         let config = self.config.lock().await.clone();
         if !config.auto_restore_on_launch_effective() {
             return;

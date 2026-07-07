@@ -1289,3 +1289,44 @@ continua exigindo o prefixo existir, entao um jogo Windows-only nunca aberto
 nesta maquina ainda nao tem restore-antes-de-jogar. So afeta jogos cujo save
 so existe do lado Proton (nao Linux nativo) E que tambem nao usam o espelho
 da Steam Cloud.
+
+## Status preso em "sincronizando" depois do auto-restore ao abrir o jogo: RESOLVIDO (2026-07-07)
+
+Usuario percebeu: mandar baixar da nuvem baixa certinho, mas o status do
+jogo fica preso em "sincronizando..." (`SyncStatus::Running`). Causa raiz em
+`playsyncd`: `main.rs` marca `Running` (`engine.mark_running`) assim que o
+watcher detecta o jogo ABRINDO — antes mesmo de saber se vai haver sync de
+verdade — pra cobrir a checagem de auto-restore
+(`maybe_auto_restore_on_launch`, ver secao "Restauração automática" acima)
+que roda em paralelo. O problema: essa funcao tem varios `return`/`continue`
+no meio (sem provedor configurado, sem save detectado, nada mais novo na
+nuvem, falha de rede, etc.) e NENHUM deles — nem o caminho de sucesso —
+voltava o status pra `Idle` no final. O UNICO lugar que limpava o status era
+`sync_one`, que so roda quando o jogo FECHA. Resultado: status preso em
+"sincronizando" pelo tempo inteiro que o jogo ficasse aberto, mesmo com o
+auto-restore ja tendo terminado (baixado ou nao) ha muito tempo.
+
+**Fix:** `maybe_auto_restore_on_launch` virou um wrapper fino — a logica
+antiga (todos os `return`/`continue` originais, intocados) foi pra um
+metodo privado novo (`try_auto_restore_on_launch`); o wrapper publico chama
+esse metodo e, incondicionalmente depois que ele retorna (por qualquer
+caminho), volta o status pra `Idle`. Cobre os 2 casos (achou algo mais novo
+e restaurou / nao tinha nada mais novo) e todos os early-returns por
+igual, sem precisar duplicar logica em cada um.
+
+**Validado ao vivo, na maquina real, com o daemon de producao** (rebuild
+release, `systemctl --user stop/cp/start`, versao 0.5.2): simulado um
+"jogo abrindo" com a mesma tecnica de sessoes anteriores (`env
+SteamAppId=335300 sleep 20 &`, forjando a env var que o watcher le de
+`/proc/<pid>/environ`) pra DARK SOULS™ II (ja sincronizado, nuvem sem nada
+mais novo — path seguro, sem risco de sobrescrever save de verdade com
+conteudo diferente). Log do daemon confirmou "jogo iniciado" sem entrada de
+"auto-restore: ... restaurado" (esperado, nada mais novo pra baixar dessa
+vez). Poll de `playsync status` a cada 500ms capturou a transicao real:
+"sincronizando..." em t=+0.3s e t=+1.0s, "em dia" a partir de t=+2.0s —
+antes do fix, teria ficado em "sincronizando" ate o jogo fechar (aqui,
+indefinidamente, ja que o processo forjado nao e um jogo de verdade que a
+Steam fecha sozinha).
+
+Nao commitado junto com a correcao anterior (restore em maquina nova) —
+`sync.rs` (playsyncd) modificado, versao subida pra `0.5.2`.
