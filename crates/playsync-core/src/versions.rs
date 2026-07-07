@@ -9,9 +9,13 @@
 //! sao mantidas (local e na nuvem); o resto e podado a cada sync.
 //!
 //! Arquivos da nomenclatura antiga (`save.zip`/`save-{idx}.zip`, sem
-//! timestamp, de antes dessa mudanca) nao sao reconhecidos como versao por
-//! este modulo — ficam no disco/nuvem como estao, sem serem listados nem
-//! podados, ate serem sobrescritos manualmente ou apagados a mao.
+//! timestamp, de antes dessa mudanca existir) SAO reconhecidos por
+//! `sort_versions` como a versao mais antiga de cada `path_index` — sem
+//! isso, um jogo cujo unico backup na nuvem seja de antes dessa migracao
+//! ficava com a lista de versoes vazia (nada pra "baixar da nuvem"/restaurar,
+//! mesmo tendo um backup de verdade la). Sempre tratado como o MAIS ANTIGO,
+//! nunca o mais recente — mesmo que, por nao ter timestamp, ordenasse depois
+//! na comparacao lexicografica pura.
 
 use chrono::{DateTime, Utc};
 
@@ -37,15 +41,31 @@ pub fn version_file_name(path_index: usize, total_paths: usize, timestamp: DateT
     )
 }
 
+/// Nome do arquivo "legado" (de antes da nomenclatura com timestamp) que
+/// corresponde a esse `prefix`: `save.zip` (path unico, `prefix = "save-"`)
+/// ou `save-{idx}.zip` (multiplos paths, `prefix = "save-{idx}-"`) — so tira
+/// o traco final do prefixo e troca por `.zip`.
+fn legacy_version_name(prefix: &str) -> String {
+    format!("{}.zip", prefix.trim_end_matches('-'))
+}
+
 /// Filtra `names` pros que pertencem a esse `prefix` (mesmo path_index) e
-/// devolve ordenados do mais antigo pro mais novo.
+/// devolve ordenados do mais antigo pro mais novo — incluindo o nome legado
+/// sem timestamp, se existir, sempre como o primeiro (mais antigo) da lista:
+/// como ele nao carrega data nenhuma, nao da pra confiar na ordenacao
+/// lexicografica pura pra saber onde ele entra (o `.` do `.zip` ordena antes
+/// do `-` de um timestamp de verdade, o que colocaria o legado por ULTIMO,
+/// como se fosse o mais recente — exatamente o oposto do que e).
 pub fn sort_versions(names: Vec<String>, prefix: &str) -> Vec<String> {
-    let mut matching: Vec<String> = names
+    let legacy_name = legacy_version_name(prefix);
+    let (mut legacy, mut dated): (Vec<String>, Vec<String>) = names
         .into_iter()
-        .filter(|n| n.starts_with(prefix) && n.ends_with(".zip"))
-        .collect();
-    matching.sort();
-    matching
+        .filter(|n| n.ends_with(".zip") && (*n == legacy_name || n.starts_with(prefix)))
+        .partition(|n| *n == legacy_name);
+    legacy.sort();
+    dated.sort();
+    legacy.extend(dated);
+    legacy
 }
 
 /// Quais nomes (de uma lista ja ordenada do mais antigo pro mais novo) devem
@@ -93,12 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn sort_versions_filters_by_prefix_and_ignores_old_naming() {
+    fn sort_versions_filters_by_prefix_and_ignores_unrelated_files() {
         let names = vec![
             "save-0-20260704T100000Z.zip".to_string(),
             "save-1-20260704T110000Z.zip".to_string(),
             "save-0-20260703T090000Z.zip".to_string(),
-            "save-0.zip".to_string(), // nomenclatura antiga, sem timestamp
             "outro-arquivo.txt".to_string(),
         ];
         let sorted = sort_versions(names, "save-0-");
@@ -106,6 +125,26 @@ mod tests {
             sorted,
             vec!["save-0-20260703T090000Z.zip".to_string(), "save-0-20260704T100000Z.zip".to_string()]
         );
+    }
+
+    #[test]
+    fn sort_versions_puts_legacy_undated_file_first_as_the_oldest() {
+        let names = vec![
+            "save-0-20260704T100000Z.zip".to_string(),
+            "save-0.zip".to_string(), // nomenclatura antiga, sem timestamp — na verdade a mais antiga
+        ];
+        let sorted = sort_versions(names, "save-0-");
+        assert_eq!(
+            sorted,
+            vec!["save-0.zip".to_string(), "save-0-20260704T100000Z.zip".to_string()]
+        );
+    }
+
+    #[test]
+    fn sort_versions_recognizes_single_path_legacy_name() {
+        let names = vec!["save-20260704T100000Z.zip".to_string(), "save.zip".to_string()];
+        let sorted = sort_versions(names, "save-");
+        assert_eq!(sorted, vec!["save.zip".to_string(), "save-20260704T100000Z.zip".to_string()]);
     }
 
     #[test]

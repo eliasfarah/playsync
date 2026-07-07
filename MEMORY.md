@@ -1330,3 +1330,73 @@ Steam fecha sozinha).
 
 Nao commitado junto com a correcao anterior (restore em maquina nova) —
 `sync.rs` (playsyncd) modificado, versao subida pra `0.5.2`.
+
+## Status "nunca sincronizado" contradizendo o ultimo backup: RESOLVIDO (2026-07-07)
+
+Consequencia direta de eu ter reiniciado o daemon pra testar o fix acima: o
+usuario viu TODOS os jogos ja sincronizados virarem "nunca sincronizado" na
+`playsync status`. Causa: `status_snapshot()` (`sync.rs`) so olha o mapa de
+status em MEMORIA (`Mutex<HashMap<u32, SyncStatus>>`, zerado a cada restart
+do daemon — nao so os meus de teste, qualquer um: crash, update, reboot) e
+cai pra `NeverSynced` quando nao acha entrada, mesmo com o historico
+persistido (SQLite, `last_backup`) mostrando um backup de verdade — a UI
+mostrava "ultimo backup: 2026-07-07 18:08" e "status: nunca sincronizado"
+lado a lado, se contradizendo. **Fix:** so usa `NeverSynced` quando o
+historico TAMBEM nao tem nada; senao (tem `last_backup` mas nao tem entrada
+em memoria ainda) usa `Idle`. Validado ao vivo (rebuild, reinstalado,
+reiniciado, v0.5.3): todos os jogos ja sincronizados voltaram a mostrar "em
+dia" imediatamente apos o restart, sem esperar um sync novo.
+
+## "Baixar da nuvem" nao mostrava arquivos antigos (nomenclatura pre-timestamp): RESOLVIDO (2026-07-07)
+
+Usuario percebeu: "baixar da nuvem" nao mostra os arquivos que estao no
+Google Drive. Investigado consultando o Drive DIRETO (exemplo Rust
+descartavel em `crates/playsync-core/examples/`, chamando
+`CloudBackend::list_files` sem passar pelo filtro do app) — confirmado:
+existem arquivos reais la que a listagem normal (`versions::sort_versions`)
+nunca mostra. Causa raiz, ja documentada no proprio modulo `versions.rs` de
+uma sessao anterior (decisao deliberada, nao acidente): a nomenclatura de
+versao MIGROU em algum momento de `save.zip`/`save-{idx}.zip` (sem
+timestamp) pra `save-<ts>.zip`/`save-{idx}-<ts>.zip` (com timestamp), e
+`sort_versions` so reconhecia o formato novo — arquivos do formato antigo
+ficavam invisiveis pra sempre ("ficam no disco/nuvem como estao, sem serem
+listados nem podados").
+
+Confirmado com o jogo de teste do usuario, **DARK SOULS™ II** (335300): 6
+arquivos de verdade no Drive, 5 do formato novo (aparecem) + 1 `save.zip` do
+formato antigo (nao aparecia). Curiosidade achada de quebra investigando
+outros jogos: **Ghost of Tsushima** e **God of War** tem uma MISTURA de
+nomes antigos com/sem traco (`save-0.zip`, `save-1.zip`, `save-2.zip`) que
+por acidente JA batiam com o prefixo atual (`save-` pra 1 path) e apareciam
+mesmo sem o fix — so o caso "so tenho arquivo antigo, prefixo nao bate de
+jeito nenhum" ficava 100% invisivel. **The Surge / The Surge 2 / Forza
+Horizon 5 / The Division** tem SO arquivos antigos (`save-0.zip`,
+`save-1.zip`, `save-2.zip`, formato multi-path com traco entre indice e
+".zip" mas SEM data) — 100% invisiveis ainda hoje, mas essas cloud backups
+sao provavelmente lixo de antes do fix de deteccao (zipava pasta de config,
+nao de save de verdade — ver secao do manifest da Ludusavi) e NAO foram
+tocadas por essa correcao (nem deveriam: mostrar isso como "versao pra
+restaurar" seria enganoso). So resolvido pro caso confirmado com o usuario.
+
+**Fix:** `sort_versions` (`versions.rs`) agora reconhece o nome legado
+(`legacy_version_name`, deriva de `prefix` tirando o traco final e trocando
+por `.zip`: `"save-"` → `"save.zip"`, `"save-0-"` → `"save-0.zip"`) e o
+inclui na lista, sempre como o PRIMEIRO (mais antigo) — nao dava pra confiar
+na ordenacao lexicografica pura pra isso, porque `.` (do `.zip`, sem data)
+ordena ANTES de `-` (do timestamp), o que colocaria o arquivo legado por
+ULTIMO (como se fosse o mais recente) se so desse `.sort()` direto.
+Consequencia esperada, nao um bug: como esses arquivos agora contam pra
+`versions::names_to_prune`, se o jogo ja tiver `backup_versions_to_keep`
+(default 5) versoes mais novas, o proximo sync vai podar o arquivo legado
+igual podaria qualquer versao antiga de verdade — comportamento correto
+(ele SO existe como uma curiosidade historica em jogos ja bem sincronizados
+depois disso), so vale avisar que ele nao fica visivel pra sempre.
+
+**Validado ao vivo:** `cargo test --workspace` (39 testes, 3 novos/
+atualizados pra `sort_versions`); rebuild release, reinstalado,
+`playsync restore --app-id 335300 --source google-drive --list-versions`
+mostrando `save.zip` (sem data, primeiro da lista) antes das 5 versoes
+datadas, na ordem certa terminando na mais recente de verdade — confirmado
+tambem que da pra BAIXAR esse arquivo legado de verdade (exemplo
+descartavel chamando `CloudBackend::download` direto: 8.252.114 bytes,
+sem tocar em nenhum save local). Versao subida pra `0.5.4`.
