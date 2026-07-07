@@ -1,4 +1,81 @@
-# PlaySync — estado da sessão (2026-07-05)
+# PlaySync — estado da sessão (2026-07-07)
+
+## Wizard de credenciais de nuvem (cloud setup) na CLI e na TUI: RESOLVIDO (2026-07-07)
+
+Usuário perguntou se dava pra configurar Google Drive/Box de forma mais fácil
+(hoje exige montar o JSON de credenciais na mão, caminho e formato exatos).
+Antes de implementar, pesquisei o pedido de longa data (embutir credenciais
+próprias do PlaySync pra eliminar essa etapa por completo) — achados
+registrados na memória (`reference-google-oauth-verification`): `drive.file`
+é escopo "sensível" (não precisa de CASA), e o "unverified app" com token de
+7 dias só vale em status "Testing", não em "In production". Decisão sobre
+embutir credenciais **adiada de novo** pelo usuário — implementei em vez
+disso uma melhoria menor mas incondicionalmente útil: `playsync cloud setup
+<google-drive|box>` (CLI, novo) e uma linha nova "Configurar credenciais de
+nuvem" na tela de configurações da TUI (`[c]`) — ambos perguntam Client
+ID/Secret interativamente (secret mascarado, nunca ecoado) e gravam o
+arquivo certo. CLI aceita `--client-id`/`--client-secret` pra uso scriptado.
+
+**TUI ganhou seu primeiro campo de texto livre** (`Mode::CredentialsInput`,
+`tui.rs`) — até então só tinha listas/toggles. Backspace/caracteres editam o
+campo ativo (Client ID primeiro, depois Client Secret), Enter avança/salva,
+Esc cancela. Secret mostrado como `*` repetido (nunca o texto real).
+
+**Validado ao vivo (CLI):** testado com credenciais fake via flags (os dois
+provedores, formato do JSON conferido: Google aninhado em `"installed"`,
+Box plano) e via automação de pty pro modo interativo (secret não ecoado na
+tela). Backup + sha256 das credenciais reais feito ANTES de qualquer teste,
+restaurado e conferido depois (hash idêntico).
+
+**Validado ao vivo (TUI), com um obstáculo real de teste:** a automação de
+pty inicial travava (timeout de 25s) — causa: `discover_saves()` (scan da
+Steam, 20 jogos) demora mais que os ~0.6s que o script esperava antes de
+mandar teclas, e o terminal ainda estava em modo cooked (echo ligado, sem
+raw mode) nesse meio tempo — as teclas enviadas ficavam em buffer canônico
+e chegavam todas de uma vez, fora de ordem, quando o raw mode finalmente
+ligava. Corrigido esperando por um marcador de texto real na tela (ex:
+"PlaySync") antes de mandar qualquer tecla, em vez de um delay fixo. Depois
+do fix, os 8 passos do fluxo (abrir configurações, navegar até a linha nova,
+escolher provedor, digitar Client ID, digitar Client Secret mascarado,
+salvar) confirmados um a um, e o arquivo final conferido com o conteúdo
+exato digitado.
+
+**Incidente real durante a validação, corrigido na hora:** pra checar a
+versão do binário, rodei `target/release/playsyncd --version` diretamente
+enquanto o daemon real (systemd) já estava rodando — o `playsyncd` remove/
+recria o socket Unix (`$XDG_RUNTIME_DIR/playsync.sock`) sem checar se já tem
+alguém escutando nele, então essa segunda instância "roubou" o socket do
+daemon de produção (processo real continuou vivo segundo `systemctl`/`ps`,
+mas inacessível — `playsync status` e a TUI passaram a mostrar zero jogos,
+sem erro visível). Corrigido com `systemctl --user restart
+playsyncd.service`. **Achado separado, não relacionado:** o binário
+instalado em `~/.local/bin/playsync` estava travado na v0.3.0 (nunca
+atualizado desde antes da v0.4.0!) — por isso a linha nova de credenciais
+nem aparecia pro usuário na primeira tentativa. Reinstalado o binário novo
+(0.5.0) + reiniciado o daemon, confirmado `playsync status` voltando a
+listar os jogos. **Lição:** nunca rodar um binário `playsyncd` solto (nem
+só pra `--version`) com o daemon real ativo — o bind do socket é
+incondicional e compartilhado, não tem separação dev/prod; e sempre
+reinstalar em `~/.local/bin` + reiniciar o serviço depois de um build de
+release, `target/release/` sozinho não alcança a instalação real do
+usuário.
+
+**Publicado como v0.5.0:** commits `a799ea1` (feature) e `ed8005d` (bump de
+versão), push + tag `v0.5.0` + release com tarball/`.deb` novos.
+https://github.com/eliasfarah/playsync/releases/tag/v0.5.0
+
+## Pendente pra próxima sessão (atualizado 2026-07-07)
+
+1. **Embutir credenciais OAuth próprias (Google Drive e/ou Box)** — pergunta
+   recorrente do usuário, adiada de novo nesta sessão. Pesquisa já feita (ver
+   memória `reference-google-oauth-verification`): `drive.file` é escopo
+   sensível (sem CASA), status "In production" sem verificação completa não
+   expira token em 7 dias (só o status "Testing" tem esse limite) — só fica
+   a tela de "app não verificado" uma vez por usuário + teto de 100 usuários
+   por vida do projeto até completar verificação de verdade (domínio próprio
+   + política de privacidade publicada). Precisa de uma decisão explícita do
+   usuário antes de implementar.
+
 
 ## Coluna de tamanho do save na lista de jogos: RESOLVIDO (2026-07-05)
 
